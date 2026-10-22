@@ -162,7 +162,7 @@ def coeffs_to_grid(basis: Basis, c: jnp.ndarray) -> jnp.ndarray:
     """(..., nG) -> (..., n1, n2, n3) 的零填充谱数组。"""
     lead = c.shape[:-1]
     flat = jnp.zeros(lead + (basis.nfft,), dtype=c.dtype)
-    flat = flat.at[..., _flat_index(basis)].set(c)
+    flat = flat.at[..., _flat_index(basis)].set(c, unique_indices=True)
     return flat.reshape(lead + tuple(basis.fft_shape))
 
 

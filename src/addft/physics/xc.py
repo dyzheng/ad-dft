@@ -21,7 +21,9 @@ import jax
 import jax.numpy as jnp
 
 try:
-    from .libxc_bridge import libxc_lda_energy_density, libxc_lda_kernel
+    from .libxc_bridge import (
+    libxc_lda_energy_density, libxc_lda_kernel, libxc_lda_vrho,
+)
     _HAVE_LIBXC = True
 except Exception:  # pragma: no cover - 取决于系统是否装了 libxc
     _HAVE_LIBXC = False
@@ -150,6 +152,11 @@ def xc_potential_r(xc_energy_fn, basis: Basis, lattice, rho_r):
 
     对**整个密度场**求导，因此 GGA 的 −∇· 项会自动出现（方案 §4.3 的断言）。
     """
+    if USE_LIBXC and xc_energy_fn is xc_energy_lda:
+        # 直接取 libxc 的 vrho；对 rho 的导数由 custom_vjp -> fxc 给出，
+        # 避免对 ctypes callback 做二阶 AD。
+        return (libxc_lda_vrho(rho_r, XC_LDA_X) +
+                libxc_lda_vrho(rho_r, XC_LDA_C_PZ))
     n = basis.nfft
     omega = volume(lattice)
     g = jax.grad(lambda r: xc_energy_fn(basis, lattice, r))(rho_r)

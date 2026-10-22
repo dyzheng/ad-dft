@@ -91,3 +91,36 @@ def test_response_operator_matches_map_fd():
     corr = float(jnp.sum(ja * jf) / (jnp.linalg.norm(ja) * jnp.linalg.norm(jf)))
     rel = float(jnp.linalg.norm(ja - jf) / jnp.linalg.norm(jf))
     assert corr > 0.999 and rel < 1e-3, f"I-15 失败: corr={corr:.4f}, rel={rel:.4f}"
+
+
+def test_response_transpose_is_adjoint():
+    from addft.physics.response import make_response
+
+    s = make_system()
+    st = ad.scf(s)
+    apply = make_response(s.geo, s.static, st)
+    apply_t = jax.linear_transpose(apply, st.rho_r)
+    key = jax.random.PRNGKey(11)
+    x = jax.random.normal(key, st.rho_r.shape)
+    y = jax.random.normal(jax.random.PRNGKey(12), st.rho_r.shape)
+    lhs = jnp.sum(apply(x) * y)
+    rhs = jnp.sum(x * apply_t(y)[0])
+    assert abs(float(lhs - rhs)) < 1e-10 * max(abs(float(lhs)), 1.0)
+
+
+def test_i15_at_production_grid():
+    s = ad.setup(lattice=jnp.eye(3) * 6.0,
+                 frac=jnp.array([[0., 0., 0.], [0.53, 0.47, 0.49]]),
+                 ecut=3.5, density_factor=4.0, nband=2)
+    assert s.static.basis.nfft > 3000
+    st = ad.scf(s)
+    apply = make_response(s.geo, s.static, st)
+    d0 = jnp.sin(jnp.arange(s.static.basis.nfft) * 0.71)
+    d0 = (d0 - jnp.mean(d0)) / jnp.linalg.norm(d0 - jnp.mean(d0))
+    ja = apply(d0)
+    h = 1e-6
+    jf = (scf_map(s.geo, s.static, st.rho_r + h * d0)
+          - scf_map(s.geo, s.static, st.rho_r - h * d0)) / (2 * h)
+    corr = float(jnp.sum(ja * jf) / (jnp.linalg.norm(ja) * jnp.linalg.norm(jf)))
+    rel = float(jnp.linalg.norm(ja - jf) / jnp.linalg.norm(jf))
+    assert corr > 0.999 and rel < 1e-3, f"I-15 失败: corr={corr:.4f}, rel={rel:.4f}"

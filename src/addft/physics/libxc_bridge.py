@@ -65,6 +65,34 @@ def _host_fxc(func_id, rho):
     return k
 
 
+def _host_vrho(func_id, rho):
+    return _host_lda(func_id, rho)[1]
+
+
+@jax.custom_vjp
+def _vrho(n, func_id):
+    shape = jax.ShapeDtypeStruct(n.shape, jnp.float64)
+    return jax.pure_callback(lambda x: _host_vrho(func_id, x), shape, n)
+
+
+def _vrho_fwd(n, func_id):
+    shape = jax.ShapeDtypeStruct(n.shape, jnp.float64)
+    v = jax.pure_callback(lambda x: _host_vrho(func_id, x), shape, n)
+    return v, (n, func_id)
+
+
+def _vrho_bwd(res, g):
+    n, func_id = res
+    return g * libxc_lda_kernel(n, func_id), None
+
+
+_vrho.defvjp(_vrho_fwd, _vrho_bwd)
+
+
+def libxc_lda_vrho(n, func_id):
+    return _vrho(n, func_id)
+
+
 def libxc_lda_kernel(n, func_id):
     shape = jax.ShapeDtypeStruct(n.shape, jnp.float64)
     return jax.pure_callback(lambda x: _host_fxc(func_id, x), shape, n)

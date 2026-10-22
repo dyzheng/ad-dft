@@ -64,7 +64,8 @@ def energy_explicit(system: System, state: SCFState | None = None):
     return total_energy(system.geo, system.static, state)
 
 
-def make_energy(static: Static, mode: str = "envelope", **scf_kwargs):
+def make_energy(static: Static, mode: str = "envelope",
+                adjoint_mode: str = "matrix_free", **scf_kwargs):
     """把「SCF + 能量」包成一个可微标量函数 f(geo)。
 
     这是整个软件唯一允许暴露给优化器/训练循环的物理入口。
@@ -98,7 +99,9 @@ def make_energy(static: Static, mode: str = "envelope", **scf_kwargs):
         if mode == "envelope":
             # 状态冻结 ⇒ 包络定理
             return (jax.grad(lambda gg: loss(gg, state))(geo),)
-        return (implicit_grad(geo, static, state, lambda g_, s_, st_: loss(g_, st_)),)
+        return (implicit_grad(geo, static, state,
+                              lambda g_, s_, st_: loss(g_, st_),
+                              mode=adjoint_mode),)
 
     _energy.defvjp(_fwd, _bwd)
     return _energy
