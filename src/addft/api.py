@@ -31,12 +31,14 @@ class System(NamedTuple):
 
 def setup(lattice, frac, psp: Pseudo | None = None, ecut: float = 8.0,
           nband: int = 4, kmesh: KMesh | None = None, sigma: float = 0.05,
-          density_factor: float = 4.0, eta_ewald: float = 0.9) -> System:
+          density_factor: float = 4.0, eta_ewald: float = 0.9,
+          spec_idx=None) -> System:
     geo = Cell(lattice=jnp.asarray(lattice, dtype=jnp.float64),
                frac=jnp.asarray(frac, dtype=jnp.float64))
     psp = synthetic() if psp is None else psp
-    static = make_static(geo, psp, kmesh or gamma(), ecut, nband, sigma,
-                         density_factor, eta_ewald)
+    static = make_static(geo, psp, kmesh or gamma(), ecut, nband,
+                         spec_idx=spec_idx, sigma=sigma,
+                         density_factor=density_factor, eta_ewald=eta_ewald)
     return System(geo=geo, static=static)
 
 

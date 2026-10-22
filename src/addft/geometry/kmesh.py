@@ -2,6 +2,10 @@
 
 权重契约（最容易出错、也最难发现的一类）：Σ_k w_k = 1，**不是** 1/nk 再乘自旋因子。
 自旋简并因子 2 在密度与能量里单独出现，绝不混进 w_k。
+
+`KMesh` 内部只存**分数坐标** `kfrac`（以倒格矢为基）。笛卡尔 k 必须由
+`cartesian(lattice)` 现算：`k_cart = kfrac @ (2π inv(lattice).T)`。
+把 `2π·frac` 直接当笛卡尔 k 用会让所有非 Γ 计算的 |k| 错一个晶格常数因子。
 """
 
 from __future__ import annotations
@@ -13,15 +17,17 @@ import numpy as np
 
 
 class KMesh(NamedTuple):
-    kpts: jnp.ndarray  # (nk, 3) 笛卡尔，单位 2π/Bohr
+    kfrac: jnp.ndarray  # (nk, 3) 以倒格矢为基的分数坐标
     weights: jnp.ndarray  # (nk,)  和为 1
+
+    def cartesian(self, lattice) -> jnp.ndarray:
+        """k_cart = kfrac @ (2π inv(lattice).T)，单位 1/Bohr。"""
+        bmat = 2.0 * jnp.pi * jnp.linalg.inv(lattice).T
+        return self.kfrac @ bmat
 
 
 def gamma() -> KMesh:
-    return KMesh(
-        kpts=jnp.zeros((1, 3)),
-        weights=jnp.ones((1,)),
-    )
+    return KMesh(kfrac=jnp.zeros((1, 3)), weights=jnp.ones((1,)))
 
 
 def monkhorst_pack(n, shift=None) -> KMesh:
@@ -42,9 +48,9 @@ def monkhorst_pack(n, shift=None) -> KMesh:
     frac = np.asarray(pts, dtype=float)
     frac = np.where(frac >= 0.5, frac - 1.0, frac)  # 折回 [-0.5, 0.5)
     nk = frac.shape[0]
-    # 注意：这里 (…)/n 给出的是「以 2π/bohr 为单位」的 k，与 reciprocal() 同量纲
+    # 这里只存分数坐标，不乘 2π；笛卡尔转换必须经过 cartesian(lattice)。
     return KMesh(
-        kpts=2.0 * jnp.pi * jnp.asarray(frac),
+        kfrac=jnp.asarray(frac),
         weights=jnp.full((nk,), 1.0 / nk),
     )
 

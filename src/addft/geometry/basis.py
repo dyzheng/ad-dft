@@ -58,29 +58,41 @@ def smooth_up(n: int) -> int:
     return n
 
 
-def _nmax_on_axis(lattice, gcut2: float) -> tuple[int, int, int]:
-    """每个倒格方向上需要多少个整数指标才能覆盖球 |G|^2 <= gcut2。"""
+def _nmax_on_axis(lattice, gcut2: float, kmax: float = 0.0) -> tuple[int, int, int]:
+    """每个倒格方向上需要多少个整数指标才能覆盖球 |k+G|^2 <= gcut2。"""
     lat = np.asarray(lattice, dtype=float)
     a_len = np.linalg.norm(lat, axis=1)  # |a_i|
     # |m_i b_i| >= |m_i| * 2π/|a_i|，故 m_i 的保守上界：
-    m = np.ceil(np.sqrt(gcut2) * a_len / (2.0 * np.pi)).astype(int)
+    m = np.ceil((np.sqrt(gcut2) + kmax) * a_len / (2.0 * np.pi)).astype(int)
     return int(m[0]), int(m[1]), int(m[2])
 
 
-def build_miller(lattice, ecut: float, gamma_only: bool = True) -> jnp.ndarray:
-    """在**参考构型**上确定整数指标集合。此函数不参与微分。"""
+def build_miller(lattice, ecut: float, gamma_only: bool = True,
+                 kpts=None) -> jnp.ndarray:
+    """在**参考构型**上确定整数指标集合。此函数不参与微分。
+
+    非 Γ 时使用**联合壳层**：对全部 k 点取并集 `|k+G|^2 <= 2Ecut`。
+    这样所有 k 共用同一个 miller 集合（`nG` 与 FFT 布局一致）；代价是
+    比 ABACUS 的 per-k 壳层略大，M0 报告中显式注明。
+    """
     gcut2 = shell_radius2(ecut)
     lat = np.asarray(lattice, dtype=float)
     bmat = 2.0 * np.pi * np.linalg.inv(lat).T
-    m1, m2, m3 = _nmax_on_axis(lattice, gcut2)
+    ks = np.zeros((1, 3)) if kpts is None else np.asarray(kpts, dtype=float)
+    kmax = float(np.max(np.linalg.norm(ks, axis=1)))
+    m1, m2, m3 = _nmax_on_axis(lattice, gcut2, kmax)
     rng = np.stack(np.meshgrid(
         np.arange(-m1, m1 + 1),
         np.arange(-m2, m2 + 1),
         np.arange(-m3, m3 + 1),
         indexing="ij",
     ), axis=-1).reshape(-1, 3)
-    cart = rng @ bmat
-    keep = np.sum(cart ** 2, axis=1) <= gcut2 * (1.0 + 1e-12)
+    bmat_inv = np.linalg.inv(bmat)
+    keep = np.zeros(len(rng), dtype=bool)
+    for k in ks:
+        kfrac = k @ bmat_inv  # k_cart = kfrac @ bmat
+        cart = (rng + kfrac) @ bmat
+        keep |= np.sum(cart ** 2, axis=1) <= gcut2 * (1.0 + 1e-12)
     if gamma_only:
         pass  # Γ 点：实波函数可用 r2c；此处保留全复表示，由 kernel 层优化
     miller = rng[keep]
@@ -101,9 +113,10 @@ def fft_shape(lattice, ecut: float, density_factor: float = 4.0) -> tuple:
     return tuple(dims)
 
 
-def make_basis(lattice, ecut: float, density_factor: float = 4.0) -> Basis:
+def make_basis(lattice, ecut: float, density_factor: float = 4.0,
+               kpts=None) -> Basis:
     return Basis(
-        miller=build_miller(lattice, ecut),
+        miller=build_miller(lattice, ecut, kpts=kpts),
         ecut=float(ecut),
         fft_shape=fft_shape(lattice, ecut, density_factor),
     )

@@ -45,18 +45,22 @@ class SCFState(NamedTuple):
 
 
 def make_static(cell: Cell, psp: Pseudo, kmesh: KMesh, ecut: float,
-                nband: int, sigma: float = 0.01,
+                nband: int, spec_idx=None, sigma: float = 0.01,
                 density_factor: float = 4.0, eta_ewald: float = 0.9) -> Static:
-    basis = make_basis(cell.lattice, ecut, density_factor)
-    species = tuple(int(s) for s in range(psp.nspec))
-    spec_idx = jnp.asarray([species[0]] * cell.natom, dtype=jnp.int32)
-    nelec = float(jnp.sum(psp.zval[0]) * cell.natom)
+    if spec_idx is None:
+        spec_idx = jnp.zeros((cell.natom,), dtype=jnp.int32)
+    spec_idx = jnp.asarray(spec_idx, dtype=jnp.int32)
+    if int(psp.nspec) != 1:
+        raise NotImplementedError("多 species 在 R3 只允许显式拒绝，不做静默映射")
+    kpts = kmesh.cartesian(cell.lattice)
+    basis = make_basis(cell.lattice, ecut, density_factor, kpts=kpts)
+    nelec = float(jnp.sum(psp.zval[spec_idx]))
     return Static(
         basis=basis,
-        kpts=kmesh.kpts,
+        kpts=kpts,
         kweights=kmesh.weights,
         psp=psp,
-        spec_idx=spec_idx.astype(jnp.int32),
+        spec_idx=spec_idx,
         nband=int(nband),
         spin_degeneracy=2.0,
         sigma=float(sigma),
