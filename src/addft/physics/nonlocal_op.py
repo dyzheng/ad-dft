@@ -18,41 +18,49 @@ import jax.numpy as jnp
 
 from ..geometry.basis import Basis, g2, gvectors
 from ..geometry.cell import Cell, positions, volume
-from ..geometry.psp import Pseudo, beta_q
+from ..geometry.psp import Pseudo, beta_q, lm_table
+from .ylm import ylm_real
 
 
 def dion_full(psp: Pseudo, spec_idx) -> jnp.ndarray:
-    """(nat*nproj, nat*nproj) 的块对角 D。
+    """(nat*nh, nat*nh) 的块对角 D，nh=Σ(2l+1)。
 
     关键：块索引必须放在 (i, p, j, q)，reshape 后全局行=(i,p)、列=(j,q)。
     不能写成 (i, j, p, q) —— 那会把不同原子的块交错成非 Hermitian 矩阵。
+    径向 D 对同一 l 的全部 m 通道复制；不同 (l,m) 之间为零。
     """
     si = jnp.asarray(spec_idx)
     nat = int(si.shape[0])
-    npr = psp.nproj
-    d = jnp.zeros((nat, npr, nat, npr), dtype=psp.dion.dtype)
+    nh = int(psp.nh[int(si[0])])
+    d = jnp.zeros((nat, nh, nat, nh), dtype=psp.dion.dtype)
+    lm = lm_table(psp.proj_l[int(si[0])])
     for i in range(nat):
-        d = d.at[i, :, i, :].set(psp.dion[si[i]])
-    return d.reshape(nat * npr, nat * npr)
+        for p, (ib, l, m) in enumerate(lm):
+            for q, (jb, l2, m2) in enumerate(lm):
+                if l == l2 and m == m2:
+                    d = d.at[i, p, i, q].set(psp.dion[int(si[i]), ib, jb])
+    return d.reshape(nat * nh, nat * nh)
 
 
 def projectors(psp: Pseudo, spec_idx, basis: Basis, cell: Cell, kpts):
-    """(nk, nat*nproj, nG) complex —— β_Ii(G)，含结构因子与 1/√Ω。"""
+    """(nk, nat*nh, nG) complex —— 每个径向 β 展开为 m=0..2l 个通道。"""
     nat = int(spec_idx.shape[0])
-    npj = psp.nproj
+    nh = int(psp.nh[int(spec_idx[0])])  # 本轮单 species
     r = positions(cell)  # (nat, 3)
     omega = volume(cell.lattice)
     out = []
     for ik in range(int(kpts.shape[0])):
         gk = gvectors(basis, cell.lattice, kpts[ik])  # (nG, 3)
         q = jnp.sqrt(jnp.sum(gk * gk, axis=-1))  # (nG,)
-        # β̃_i(q) 逐原子求值：(nat, nproj, nG)
-        bet = jnp.stack([
-            beta_q(psp, spec_idx[i], q) for i in range(nat)
-        ], axis=0) if nat > 0 else jnp.zeros((0, npj, basis.nG))
+        ylm = ylm_real(int(psp.lmax), gk)  # (nG,(lmax+1)^2)
         phase = jnp.exp(-1j * (gk @ r.T))  # (nG, nat)
-        blk = bet * phase.T[:, None, :]  # (nat, nproj, nG)
-        out.append(blk.reshape(nat * npj, basis.nG) / jnp.sqrt(omega))
+        rows = []
+        for i in range(nat):
+            si = int(spec_idx[i])
+            bet = beta_q(psp, si, q)  # (nrad,nG)
+            for ib, l, m in lm_table(psp.proj_l[si]):
+                rows.append(bet[ib] * ylm[:, l * l + m] * phase[:, i])
+        out.append(jnp.stack(rows, axis=0) / jnp.sqrt(omega))
     return jnp.stack(out, axis=0)
 
 

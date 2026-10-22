@@ -176,8 +176,9 @@ def test_dion_packing_is_block_diagonal():
 
     psp = synthetic()
     si = jnp.array([0, 0], dtype=jnp.int32)
+    nh = int(psp.nh[0])          # l=[0,1] → 4
     d = dion_full(psp, si)
-    assert d.shape == (4, 4)
+    assert d.shape == (2 * nh, 2 * nh)
     assert float(jnp.max(jnp.abs(d - jnp.conj(d).T))) < 1e-14
-    assert float(jnp.max(jnp.abs(d[2:, :2]))) < 1e-14
-    assert float(jnp.max(jnp.abs(d[:2, 2:]))) < 1e-14
+    assert float(jnp.max(jnp.abs(d[nh:, :nh]))) < 1e-14
+    assert float(jnp.max(jnp.abs(d[:nh, nh:]))) < 1e-14

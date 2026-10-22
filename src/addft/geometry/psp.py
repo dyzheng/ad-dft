@@ -37,6 +37,29 @@ class Pseudo(NamedTuple):
     def nproj(self) -> int:
         return int(self.proj_l.shape[1])
 
+    @property
+    def nrad(self) -> int:
+        return int(self.proj_l.shape[1])
+
+    @property
+    def nh(self):
+        return jnp.asarray([
+            sum(2 * int(l) + 1 for l in row) for row in self.proj_l
+        ], dtype=jnp.int32)
+
+    @property
+    def lmax(self) -> int:
+        return int(jnp.max(self.proj_l))
+
+
+def lm_table(proj_l_row):
+    """返回 [(radial_index, l, m_index_local), ...]，m 顺序与 ABACUS 一致。"""
+    tab = []
+    for ib, l in enumerate(proj_l_row):
+        for m in range(2 * int(l) + 1):
+            tab.append((ib, int(l), m))
+    return tab
+
 
 def vloc_q(psp: Pseudo, spec_idx, q):
     """局域赝势的倒空间径向部分 ṽ_loc(q)（无 1/Ω，单位 Ha）。

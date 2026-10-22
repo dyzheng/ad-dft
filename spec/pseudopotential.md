@@ -45,3 +45,6 @@ projectors(psp, spec_idx, basis, cell, kpts) -> (nk, nat*nproj, nG)
 * **F-P4**：预插值后把 β 当常量 → 力丢 Pulay 项，应力丢缩放项。
   检测：`⟨Ax,y⟩ = ⟨x,A^T y⟩` 检查不出这个（β 被当常量后算子仍 Hermitian）；
   只有"对 R 的 VJP vs 中心差分 × 三个构型"能抓。
+
+**m 通道不是可选项。** 每个径向 β 必须展开成 `m=0..2l`，共 `2l+1` 个 projector；
+`nhtolm=l*l+m`。只实现径向部分会让 l=1 的 p 通道少 2/3，能量与力都错。
