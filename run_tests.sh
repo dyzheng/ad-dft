@@ -10,8 +10,10 @@ for f in tests/test_*.py; do
   "$PY" -m pytest "$f" 2>&1 | tail -1
   [ "${PIPESTATUS[0]}" -ne 0 ] && fail=1
 done
-exit $fail
 
 if [ "${ADDFT_RUN_ABACUS:-0}" = "1" ]; then
   PYTHONPATH=src:tests:. "$PY" -m pytest tests/test_abacus_regression.py -q -m abacus
+  [ $? -ne 0 ] && fail=1
 fi
+
+exit $fail

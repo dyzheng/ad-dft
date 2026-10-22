@@ -10,6 +10,10 @@ E_background 不能因为「体系中性」就省掉：中性的是「离子 + �
 离子自身的 Σ Z ≠ 0，背景项由电子的 G=0 项补偿，两者必须成对出现。
 
 oracle：η 无关性（扫 η，能量变化 < 1e-8 Ha）、平移不变、AD 对 R 的导数 vs 中心差分。
+
+默认 ``nmax=8`` 不是保守取值而是收敛值：5.1 Bohr 的 Si 原胞在 ``nmax=1``
+时倒空间求和误差约 0.069 Ha（≈0.9 eV/atom），会污染与 ABACUS 的能量对照。
+``nmax=8`` 对该原胞与 6 Bohr 合成盒均与高截断参考一致到 1e-8 Ha。
 """
 
 from __future__ import annotations
@@ -23,11 +27,11 @@ from ..geometry.cell import Cell, positions, volume
 DEFAULT_ETA = 0.9  # 1/Bohr；对 ~6 Bohr 的盒子是安全区间
 
 
-def _translation_list(nmax: int = 1):
+def _translation_list(nmax: int = 8):
     return [t for t in itertools.product(range(-nmax, nmax + 1), repeat=3)]
 
 
-def ewald_energy(cell: Cell, charges, eta: float = DEFAULT_ETA, nmax: int = 1):
+def ewald_energy(cell: Cell, charges, eta: float = DEFAULT_ETA, nmax: int = 8):
     lat = cell.lattice
     omega = volume(lat)
     r = positions(cell)  # (nat, 3)

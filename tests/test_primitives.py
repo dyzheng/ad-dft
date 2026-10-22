@@ -137,6 +137,22 @@ def test_ewald_translation_invariant(system):
     assert abs(float(e0 - e1)) < 1e-12
 
 
+def test_ewald_default_cutoff_is_converged_for_si_cell():
+    """R3-09 回归：默认截断必须对 5.1 Bohr 的 Si 原胞收敛。
+
+    ``nmax=1`` 的倒空间尾巴在 fcc 小原胞上会给出 ~0.069 Ha 的误差，
+    恰好吃掉整个 M0 能量预算；这里用高截断参考锁住默认值。
+    """
+    from addft.geometry.cell import Cell
+
+    lat = jnp.array([[0.0, 5.1, 5.1], [5.1, 0.0, 5.1], [5.1, 5.1, 0.0]])
+    cell = Cell(lattice=lat, frac=jnp.array([[0.0, 0.0, 0.0], [0.25, 0.25, 0.25]]))
+    z = jnp.array([4.0, 4.0])
+    e_default = ewald_energy(cell, z)
+    e_ref = ewald_energy(cell, z, eta=0.4, nmax=12)
+    assert abs(float(e_default - e_ref)) < 1e-8
+
+
 def test_matrix_vs_grid_representation(system):
     basis = system.static.basis
     st = ad.scf(system)
