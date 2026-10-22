@@ -1,0 +1,16 @@
+INPUT_PARAMETERS
+suffix            r3
+calculation       scf
+ntype             1
+nbands            6
+symmetry          0
+pseudo_dir        /root/abacus-develop/tests/PP_ORB
+ecutwfc           20
+scf_thr           1e-9
+scf_nmax          100
+basis_type        pw
+ks_solver         dav_subspace
+smearing_method   fixed
+cal_force         1
+cal_stress        1
+out_element_info  1

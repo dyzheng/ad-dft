@@ -20,6 +20,14 @@ RY_TO_HA = 0.5
 #: ABACUS INPUT 参数 → 本项目字段（只映射 V0–V2 需要的子集）
 PARAM_MAP = {
     "ecutwfc": ("basis.ecut_ha", lambda v: float(v) * RY_TO_HA),
+    "nbands": ("nband", int),
+    "pseudo_dir": ("pseudo_dir", str),
+    "cal_force": ("scf.cal_force", lambda v: int(v) != 0),
+    "cal_stress": ("scf.cal_stress", lambda v: int(v) != 0),
+    "out_element_info": ("scf.out_element_info", lambda v: int(v) != 0),
+    "ntype": ("cell.ntype", int),
+    "suffix": ("io.suffix", str),
+    "ks_solver": ("solver.ks_solver", str),
     "scf_thr": ("scf.threshold", float),
     "scf_nmax": ("scf.max_iter", int),
     "smearing_method": ("occupation.method", str),
@@ -61,7 +69,12 @@ def parse_input(path: str | Path) -> dict:
         if not line:
             continue
         parts = line.split()
-        key, val = parts[0].lower(), parts[1]
+        key = parts[0].lower()
+        if key == "input_parameters":
+            continue
+        if len(parts) < 2:
+            raise UnmappedParameterError(f"无法解析的 INPUT 行: {line}")
+        val = parts[1]
         if key in UNSUPPORTED and UNSUPPORTED[key] is not None:
             raise UnmappedParameterError(f"{key}: {UNSUPPORTED[key]}")
         if key not in PARAM_MAP:
@@ -97,48 +110,123 @@ def parse_kpt(path: str | Path) -> dict:
 
 
 def parse_stru(path: str | Path):
-    """读 ABACUS STRU（LATTICE_CONSTANT / LATTICE_VECTORS / ATOMIC_POSITIONS）。
+    """读 ABACUS STRU，返回 dict(lattice, frac, species, magmoms, labels, pseudo_files)。
 
-    返回 (lattice_bohr, frac, species, magmom)。
+    Cartesian 坐标的单位是 `LATTICE_CONSTANT` (lat0)，不是晶格向量；
+    旧实现漏掉 lat0，真实 Si 结构会错 2 倍。原子按 `ATOMIC_SPECIES` 的
+    species 块绑定，多元素不再被静默当成单元素。
     """
     text = Path(path).read_text(encoding="utf-8").splitlines()
-    lat0 = 1.0
-    vecs, species, coords, magmoms = [], [], [], []
-    i = 0
-    n = len(text)
+    lat0, vecs = 1.0, []
+    species_labels, pseudo_files = [], []
+    species_per_atom, coords, magmoms = [], [], []
+    mode = None
+    i, n = 0, len(text)
+
     while i < n:
         line = text[i].split("#")[0].strip()
-        if line.startswith("LATTICE_CONSTANT"):
-            lat0 = float(line.split()[1])
-        elif line.startswith("LATTICE_VECTORS"):
-            for j in range(3):
-                vecs.append([float(x) for x in text[i + 1 + j].split()[:3]])
-            i += 3
-        elif line.startswith("ATOMIC_POSITIONS"):
-            cart = "Cartesian" in text[i]
+        if not line:
+            i += 1
+            continue
+        if line.startswith("ATOMIC_SPECIES"):
             i += 1
             while i < n:
                 s = text[i].split("#")[0].strip()
-                if not s:
-                    i += 1
-                    continue
-                if re.match(r"^[A-Za-z]", s) and s.lower() not in ("direct", "cartesian"):
-                    species.append(s)
-                    i += 1
-                    continue
-                nums = s.split()
-                if len(nums) >= 3 and re.match(r"^[-+.\d]", nums[0]):
-                    xyz = [float(x) for x in nums[:3]]
-                    magmoms.append(float(nums[3]) if len(nums) > 3 else 0.0)
-                    coords.append(xyz)
+                if not s or s.startswith(("LATTICE_", "ATOMIC_POSITIONS")):
+                    break
+                parts = s.split()
+                if len(parts) >= 3:
+                    species_labels.append(parts[0])
+                    pseudo_files.append(parts[2])
                 i += 1
+            continue
+        if line.startswith("LATTICE_CONSTANT"):
+            parts = line.split()
+            if len(parts) >= 2:
+                lat0 = float(parts[1])
+                i += 1
+            else:
+                lat0 = float(text[i + 1].split("#")[0].strip())
+                i += 2
+            continue
+        if line.startswith("LATTICE_VECTORS"):
+            for j in range(3):
+                vecs.append([float(x) for x in text[i + 1 + j].split()[:3]])
+            i += 4
+            continue
+        if line.startswith("ATOMIC_POSITIONS"):
+            parts = line.split()
+            i += 1
+            if len(parts) >= 2:
+                mode = parts[1]
+            else:
+                while i < n:
+                    s = text[i].split("#")[0].strip()
+                    if not s:
+                        i += 1
+                        continue
+                    mode = s.split()[0]
+                    i += 1
+                    break
+            if mode not in ("Direct", "Cartesian"):
+                raise NotImplementedError(f"未支持的坐标模式: {mode}")
             break
         i += 1
-    lat = np.array(vecs) * lat0  # Bohr（ABACUS 的 lat0 以 Bohr 计）
-    frac = np.array(coords)
-    if len(coords) and max(abs(x) for x in coords[0]) > 2.0:  # 粗判 Cartesian
-        frac = frac @ np.linalg.inv(lat)
-    return lat, frac, species, np.array(magmoms)
+
+    while i < n:
+        s = text[i].split("#")[0].strip()
+        if not s:
+            i += 1
+            continue
+        if s.startswith(("LATTICE_", "ATOMIC_")):
+            break
+        label = s.split()[0]
+        if label not in species_labels:
+            raise ValueError(
+                f"ATOMIC_POSITIONS 中的元素未在 ATOMIC_SPECIES 定义: {label}")
+        mag = float(text[i + 1].split()[0])
+        count = int(float(text[i + 2].split()[0]))
+        i += 3
+        for _ in range(count):
+            nums = [float(x) for x in text[i].split()[:3]]
+            coords.append(nums)
+            magmoms.append(mag)
+            species_per_atom.append(label)
+            i += 1
+
+    if mode is None:
+        raise ValueError("STRU 缺少 ATOMIC_POSITIONS 坐标模式")
+    lat = np.asarray(vecs, dtype=float) * lat0  # Bohr
+    if mode == "Direct":
+        frac = np.asarray(coords, dtype=float)
+    else:  # Cartesian，单位 lat0
+        frac = (np.asarray(coords, dtype=float) * lat0) @ np.linalg.inv(lat)
+    return dict(lattice=lat, frac=frac, species=species_per_atom,
+                magmoms=np.asarray(magmoms), labels=species_labels,
+                pseudo_files=pseudo_files)
+
+
+def setup_from_case(case_dir):
+    """读 INPUT/KPT/STRU/UPF，构造 addft.System。只支持单 species。"""
+    from addft.api import setup
+    from addft.geometry.kmesh import gamma, monkhorst_pack
+    from addft.geometry.psp import from_upf
+
+    case = Path(case_dir)
+    inp = parse_input(case / "INPUT")
+    kpt = parse_kpt(case / "KPT")
+    stru = parse_stru(case / "STRU")
+    if len(set(stru["species"])) != 1:
+        raise NotImplementedError("R3 只支持单 species 的 ABACUS 回归")
+    pseudo_path = case / inp.get("pseudo_dir", ".") / stru["pseudo_files"][0]
+    psp = from_upf(pseudo_path)
+    km = (gamma() if kpt["mode"] == "gamma"
+          else monkhorst_pack(kpt["mesh"], kpt["shift"]))
+    sigma = 0.0 if inp.get("occupation.method") == "fixed" else \
+        inp.get("occupation.sigma_ha", 0.05)
+    return setup(lattice=stru["lattice"], frac=stru["frac"], psp=psp,
+                 ecut=inp["basis.ecut_ha"], nband=inp.get("nband", 6),
+                 kmesh=km, sigma=sigma)
 
 
 if __name__ == "__main__":  # pragma: no cover

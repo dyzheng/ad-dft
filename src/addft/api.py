@@ -42,6 +42,12 @@ def setup(lattice, frac, psp: Pseudo | None = None, ecut: float = 8.0,
     return System(geo=geo, static=static)
 
 
+def setup_from_case(case_dir):
+    """从 ABACUS 算例目录（INPUT/KPT/STRU/UPF）构造 System。"""
+    from adapters.abacus.io import setup_from_case as _setup_from_case
+    return _setup_from_case(case_dir)
+
+
 def scf(system: System, **kwargs) -> SCFState:
     return solve_scf(system.geo, system.static, **kwargs)
 

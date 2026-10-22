@@ -21,6 +21,7 @@ from .api import (  # noqa: F401
     make_energy,
     scf,
     setup,
+    setup_from_case,
     stress,
 )
 from .geometry.cell import Cell, strained, volume  # noqa: F401
@@ -29,7 +30,8 @@ from .geometry.psp import Pseudo, synthetic  # noqa: F401
 from .runtime import units  # noqa: F401
 
 __all__ = [
-    "System", "setup", "scf", "energy", "energy_explicit", "energy_and_forces", "stress",
+    "System", "setup", "setup_from_case", "scf", "energy", "energy_explicit",
+    "energy_and_forces", "stress",
     "energy_decomposition", "make_energy", "Cell", "strained", "volume",
     "gamma", "monkhorst_pack", "Pseudo", "synthetic", "units",
 ]
