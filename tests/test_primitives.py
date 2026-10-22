@@ -156,6 +156,9 @@ def test_nonlocal_operator_is_hermitian(system):
     proj = nonlocal_op.projectors(system.static.psp, system.static.spec_idx,
                                   basis, system.geo, system.static.kpts)
     d = nonlocal_op.dion_full(system.static.psp, system.static.spec_idx)
+    nh = int(system.static.psp.nh[0])
+    # 布局不仅是 Hermitian：原子 1 的块必须落在 rows/cols nh..2nh。
+    assert float(jnp.max(jnp.abs(d[nh:, nh:]))) > 1e-6
     x = jax.random.normal(jax.random.PRNGKey(3), st.psi[0].shape) + 0j
     y = jax.random.normal(jax.random.PRNGKey(4), st.psi[0].shape) + 0j
     ax = nonlocal_op.vnl_apply(proj, d, x[None])
