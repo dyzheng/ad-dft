@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>可微周期性 DFT · 架构与校验</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#151b23; --panel2:#1b222c; --line:#28313d;
+    --ink:#e6edf3; --dim:#93a1b0; --faint:#5d6b7a;
+    --acc:#4ea1ff; --ok:#3fb950; --bad:#f85149; --warn:#d29922; --purple:#a371f7;
+    --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"Segoe UI","Noto Sans SC",system-ui,sans-serif;
+    line-height:1.7;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 28px 100px}
+  header.hero{padding:74px 0 42px;border-bottom:1px solid var(--line);margin-bottom:46px}
+  .tag{display:inline-block;font:600 11px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;
+    color:var(--acc);border:1px solid rgba(78,161,255,.35);background:rgba(78,161,255,.08);
+    padding:7px 11px;border-radius:4px;margin-bottom:20px}
+  h1{font-size:40px;line-height:1.2;margin:0 0 16px;letter-spacing:-.02em;font-weight:650}
+  h1 em{font-style:normal;color:var(--acc)}
+  .lede{font-size:16.5px;color:var(--dim);max-width:760px;margin:0}
+  .meta{margin-top:26px;display:flex;gap:26px;flex-wrap:wrap;font:12px/1.6 var(--mono);color:var(--faint)}
+  h2{font-size:23px;margin:60px 0 8px;letter-spacing:-.01em;font-weight:620;
+     padding-top:22px;border-top:1px solid var(--line)}
+  h2 .num{font:600 12px/1 var(--mono);color:var(--acc);margin-right:12px;vertical-align:2px}
+  h3{font-size:15px;margin:30px 0 8px;color:var(--ink);font-weight:620}
+  p{margin:10px 0;color:#c9d4de}
+  .sub{color:var(--dim);font-size:14px}
+  code{font:12.5px/1.6 var(--mono);background:#0a0e14;border:1px solid var(--line);
+    padding:2px 6px;border-radius:4px;color:#a9c7e8}
+  pre{font:12.5px/1.65 var(--mono);background:#0a0e14;border:1px solid var(--line);
+    padding:16px 18px;border-radius:8px;overflow-x:auto;color:#b9c7d6}
+  pre .c{color:#5d6b7a}
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:1fr 1fr}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g4{grid-template-columns:repeat(4,1fr)}
+  @media(max-width:860px){.g2,.g3,.g4{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+  .card h4{margin:0 0 6px;font-size:13.5px;font-weight:620}
+  .card .k{font:11px/1.4 var(--mono);color:var(--faint);letter-spacing:.05em;text-transform:uppercase}
+  .card .v{font:600 17px/1.3 var(--mono);margin-top:8px}
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)}
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13.5px}
+  th{text-align:left;font:600 11.5px/1.4 var(--mono);letter-spacing:.06em;text-transform:uppercase;
+    color:var(--faint);border-bottom:1px solid var(--line);padding:9px 12px}
+  td{padding:9px 12px;border-bottom:1px solid rgba(40,49,61,.7);vertical-align:top;color:#c9d4de}
+  tr:hover td{background:rgba(78,161,255,.04)}
+  td code{font-size:11.5px;padding:1px 5px}
+  .pill{display:inline-block;font:600 10.5px/1 var(--mono);padding:4px 7px;border-radius:20px;letter-spacing:.04em}
+  .pill.ok{background:rgba(63,185,80,.13);color:var(--ok);border:1px solid rgba(63,185,80,.3)}
+  .pill.bad{background:rgba(248,81,73,.12);color:var(--bad);border:1px solid rgba(248,81,73,.3)}
+  .pill.warn{background:rgba(210,153,34,.12);color:var(--warn);border:1px solid rgba(210,153,34,.3)}
+  .pill.info{background:rgba(78,161,255,.1);color:var(--acc);border:1px solid rgba(78,161,255,.28)}
+  blockquote{margin:18px 0;padding:14px 18px;border-left:3px solid var(--acc);
+    background:rgba(78,161,255,.06);border-radius:0 8px 8px 0;color:#d4e2ef;font-size:14.5px}
+  blockquote b{color:#fff}
+  .flow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:18px 0;font:12px/1 var(--mono)}
+  .flow span{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:8px 11px;color:#b9c7d6}
+  .flow i{color:var(--faint);font-style:normal}
+  .layers{display:grid;gap:7px;margin:20px 0}
+  .layer{display:grid;grid-template-columns:86px 1fr 190px;gap:14px;align-items:center;
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 16px}
+  .layer .id{font:700 13px/1 var(--mono);color:var(--acc)}
+  .layer .nm{font-size:13.5px}
+  .layer .nm small{display:block;color:var(--dim);font-size:12px;margin-top:2px}
+  .layer .st{font:11px/1.4 var(--mono);text-align:right;color:var(--faint)}
+  .layer.hot{border-color:rgba(248,81,73,.35);background:linear-gradient(90deg,rgba(248,81,73,.07),var(--panel) 40%)}
+  .layer.good{border-color:rgba(63,185,80,.3)}
+  @media(max-width:860px){.layer{grid-template-columns:70px 1fr}.layer .st{display:none}}
+  .kpi{display:flex;gap:20px;flex-wrap:wrap;margin:22px 0 6px}
+  .kpi div{flex:1;min-width:150px}
+  .kpi .lab{font:11px/1.3 var(--mono);color:var(--faint);text-transform:uppercase;letter-spacing:.05em}
+  .kpi .val{font:650 25px/1.1 var(--mono);margin-top:6px}
+  .seq{counter-reset:s;list-style:none;padding:0;margin:16px 0}
+  .seq li{counter-increment:s;position:relative;padding:12px 0 12px 46px;border-bottom:1px solid rgba(40,49,61,.6)}
+  .seq li::before{content:counter(s);position:absolute;left:0;top:12px;width:28px;height:28px;
+    display:grid;place-items:center;border-radius:50%;background:rgba(78,161,255,.12);
+    border:1px solid rgba(78,161,255,.3);color:var(--acc);font:700 12px/1 var(--mono)}
+  .seq b{display:block;font-size:13.5px;margin-bottom:2px}
+  .seq span{color:var(--dim);font-size:13px}
+  footer{margin-top:70px;padding-top:22px;border-top:1px solid var(--line);
+    font:12px/1.8 var(--mono);color:var(--faint)}
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:860px){.split{grid-template-columns:1fr}}
+  .note{font-size:12.5px;color:var(--faint);margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="tag">Architecture Review · v0.1</div>
+  <h1>可微周期性 DFT 内核<br><em>契约复刻 ABACUS，架构重新搭建</em></h1>
+  <p class="lede">能量是唯一可微标量，力、应力、极化、约束乘子都是它的导数；SCF 用不动点隐式微分，显存与迭代数解耦。复刻的是 ABACUS 的<strong>物理契约</strong>，不是它的代码。本页给出分层架构、22 个模块的任务分解、五级校验方案——以及实测下来仍未通过的那 6 项。</p>
+  <div class="meta">
+    <span>依据：abacus-develop（develop）源码实测</span>
+    <span>参照：DQC 的 AD 契约</span>
+    <span>方法：可微DFT复刻方案 V2</span>
+  </div>
+</header>
+
+<h2><span class="num">01</span>先说结论：什么已经成立，什么还不成立</h2>
+
+<p>这套架构的赌注是三句话，每一句都能被独立证伪。原型跑下来，<b>能量层与梯度层都立住了</b>。验证体系在发布前挡下了 <b>5 个"能量完全正确、梯度错 20–31%"</b> 的 bug——其中最后一个只花一行代码，却让 SCF 收敛、能量差 3 mHa、而力偏 31%。</p>
+
+<div class="kpi">
+  <div><div class="lab">SCF 收敛</div><div class="val ok">73 步 / 2e-13</div></div>
+  <div><div class="lab">已修缺陷</div><div class="val ok">5 个</div></div>
+  <div><div class="lab">未通过判据</div><div class="val warn">3 项（诊断）</div></div>
+  <div><div class="lab">力 vs FD</div><div class="val ok">3e-12</div></div>
+</div>
+
+<div class="grid g3" style="margin-top:22px">
+  <div class="card">
+    <div class="k">已经成立的</div>
+    <div class="v ok" style="font-size:15px">能量层 + 梯度层 + 离散化契约</div>
+    <p class="note">SCF 收敛到 2e-13；两种能量形式差 0；响应算子 corr 1.0000（rel 6.7e-9）；ΣF=4.2e-8；力 vs 有限差分随 h² 收敛，Richardson 外推后差 3.1e-12。</p>
+  </div>
+  <div class="card">
+    <div class="k">还不成立的</div>
+    <div class="v warn" style="font-size:15px">三项诊断缺口</div>
+    <p class="note">⟨ψ|V|ψ⟩ 与 ∫v|ψ|² 差 30%（且与 nfft 无关）；手工 ∫|ψ|²≠1；稠密 V_NL 的 Hermitian 误差 14%。三者互为线索，指向同一处约定不一致，但不影响能量与力。</p>
+  </div>
+  <div class="card">
+    <div class="k">唯一根因</div>
+    <div class="v" style="font-size:15px;color:#e6edf3">最贵的一个 bug</div>
+    <p class="note">一行 <code>vg.astype(rho_r.dtype)</code> 把复数静默转成实数，丢掉 n_G 的虚部。SCF 照样收敛、能量只差几 mHa、全部测试看着正常，而整条梯度链错了 31%。</p>
+  </div>
+</div>
+
+<blockquote><b>为什么这条记录本身就是交付物的一部分。</b>如果只交一份"全部通过"的报告，读者无法判断它是真的通过，还是把容差放宽了。而一个失败的、带数字的、可复现的判据，恰好是下一轮工作的起点——它把"还需要调"变成"按 K04→K07→K08→K12→K13 的顺序修"。</blockquote>
+
+<h2><span class="num">02</span>分层架构：可微性只有一个入口</h2>
+
+<p>七层，边界判据是"跨层调用是否违反抽象"。最关键的一条：<b>L4 只在收敛点被调用</b>——如果在 SCF 迭代过程中调用微分层，显存会随迭代数增长，梯度也会依赖未收敛的残差。</p>
+
+<div class="layers">
+  <div class="layer"><div class="id">L6</div><div class="nm">应用层<small>泛函训练 · Δ-learning · 约束扫描 · 逆设计</small></div><div class="st">不反向依赖实现</div></div>
+  <div class="layer"><div class="id">L5</div><div class="nm">观测量<small>E(分解) · F · σ · P(Wilson) · Z* · λ</small></div><div class="st">薄：&gt;50 行 = 在重实现 L2</div></div>
+  <div class="layer hot"><div class="id">L4</div><div class="nm">微分层<small>① 局部 VJP · ② 不动点隐式 · ③ 变分端到端</small></div><div class="st bad">仅在收敛点调用</div></div>
+  <div class="layer"><div class="id">L3</div><div class="nm">求解器<small>SCF 不动点 · DIIS 混合 · 本征求解 · 响应算子</small></div><div class="st">唯一允许有迭代的层</div></div>
+  <div class="layer"><div class="id">L2</div><div class="nm">物理原语<small>密度 · Hartree · XC(energy-only) · V_NL · Ewald · 占据</small></div><div class="st">每个都要 fwd + vjp + 梯度测试</div></div>
+  <div class="layer good"><div class="id">L1</div><div class="nm">几何与基组<small>Cell(pytree 叶子) · Basis(冻结壳层) · KMesh · Pseudo</small></div><div class="st ok">全项目最重要的可微接口</div></div>
+  <div class="layer"><div class="id">L0</div><div class="nm">运行时<small>单位 · dtype · 精度账本 · shard_map</small></div><div class="st">不做物理</div></div>
+</div>
+
+<h3>数据流（一次能量 / 梯度评估）</h3>
+<div class="flow">
+  <span>STRU/KPT/INPUT</span><i>→</i><span>Cell + Static</span><i>→</i>
+  <span>miller(冻结) · g²(cell) · fft_box · β(q;R,cell)</span><i>→</i>
+  <span>ψ → n → V<sub>H</sub>,V<sub>xc</sub>,V<sub>NL</sub></span><i>→</i>
+  <span>eigh → ψ*,occ*,μ*</span><i>→</i>
+  <span class="bad" style="border-color:rgba(248,81,73,.4)">[仅收敛点] Aᵀλ=∂L/∂n</span><i>→</i>
+  <span>E, F, σ, P, Z*, λ</span>
+</div>
+
+<div class="split" style="margin-top:18px">
+  <div class="card">
+    <div class="k">类型系统</div>
+<pre><span class="c"># 唯一的可微叶子</span>
+class Cell(NamedTuple):
+    lattice: Array   <span class="c"># (3,3) 行向量, Bohr</span>
+    frac:    Array   <span class="c"># (nat,3) 分数坐标</span>
+
+<span class="c"># 一律不进微分图</span>
+class Static(NamedTuple):
+    basis: Basis     <span class="c"># miller 冻结</span>
+    kpts, kweights   <span class="c"># Σw = 1</span>
+    psp, nband, sigma, nelec</pre>
+    <p class="note">一旦 Cell 在 L1 被摊平成 numpy，后面所有导数都断，而能量仍然是对的。这是本项目最贵的一类错误，用类型挡住。</p>
+  </div>
+  <div class="card">
+    <div class="k">三条求导路径</div>
+    <table style="margin:6px 0">
+      <tr><td style="width:78px"><b>① 局部 VJP</b></td><td>线性算子 → 伴随算子作用。构件。</td></tr>
+      <tr><td><b>② 不动点隐式</b></td><td><code>Aᵀλ = ∂L/∂n</code>，<code>A = I − ∂F/∂n</code>。生产主路径。</td></tr>
+      <tr><td><b>③ 变分端到端</b></td><td>直接对 ψ 求导。语义最干净，条件数最差。</td></tr>
+    </table>
+    <p class="note">只有 ② 同时满足"内存与迭代数解耦"和"梯度即物理量"。</p>
+  </div>
+</div>
+
+<h2><span class="num">03</span>从真实代码里挖出的九条硬约定</h2>
+
+<p>方案文档是机制层面正确的，但它是在离线环境写的，不承诺文件名正确。把源码读完之后，有 <b>4 处必须修正的差异</b>——它们直接改变架构。</p>
+
+<table>
+  <tr><th style="width:34px">#</th><th>源码事实</th><th style="width:270px">与文档的差异</th><th style="width:230px">对架构的影响</th></tr>
+  <tr><td>1</td><td>内部单位是 <b>Ry–Bohr</b>：<code>e2=2</code>，动能算符无 ½<br><span class="note">constants.h:79 · op_pw_ekin.cpp:45</span></td><td><span class="pill warn">差异</span> 文档按 Ha 写公式</td><td>单位桥只在 adapter 层；<code>E_Ha = E_Ry/2</code></td></tr>
+  <tr><td>2</td><td>FFT 盒：奇数 → <b>只含 2,3,5</b>（7 的分支被注释掉）<br><span class="note">pw_init.cpp:92-137</span></td><td><span class="pill ok">一致</span></td><td>直接复用规则；CI 禁止出现 7</td></tr>
+  <tr><td>3</td><td>密度网格 <code>ecutrho = 4×ecutwfc</code>，波函数复用同一盒<br><span class="note">read_inp_sys.cpp:1227</span></td><td><span class="pill info">补全</span></td><td>默认 <code>density_factor=4</code></td></tr>
+  <tr><td>4</td><td><b>NLCC 被读取但从不参与 XC</b>：<code>rho_atc</code> 只被打印<br><span class="note">read_pp_upf201.cpp:30 · pseudo.cpp:66</span></td><td><span class="pill bad">冲突</span> 文档说 NLCC 造成 1–5 meV 差异</td><td>必须显式选择：实现或拒绝，不许静默</td></tr>
+  <tr><td>5</td><td>β(|k+G|) <b>预表化</b>：<code>dq=0.010</code> 均匀表 + 4 点插值<br><span class="note">vnl_pw_table.cpp:11 · vnl_pw_getvnl.cpp:88</span></td><td><span class="pill bad">冲突</span> 文档只警告，未确认</td><td>本项目<b>不做</b>预表化——这是 AD 的立足点</td></tr>
+  <tr><td>6</td><td><code>D_ij</code> 0-based，<code>l²+m</code> 展平；<code>ijtoh</code> 残留 1-based<br><span class="note">vnl_pw_init_vnl.cpp:86,113</span></td><td><span class="pill info">补全</span></td><td>UPF 解析必须有逐元素测试</td></tr>
+  <tr><td>7</td><td>SCF 判据是<b>归一化密度残差</b>，不是能量差<br><span class="note">chg_routine.cpp:45 · chg_drho.cpp:14</span></td><td><span class="pill ok">一致</span></td><td>复用 <code>drho</code> 定义</td></tr>
+  <tr><td>8</td><td>μ 用<b>纯二分</b>（300 步）；σ 单位 <b>Ry</b><br><span class="note">occupy.cpp:394-464</span></td><td><span class="pill warn">差异</span> 文档说 Newton</td><td>二分更稳；单位统一到 Ha</td></tr>
+  <tr><td>9</td><td>解析力 5 项、应力 10 项，全部手写<br><span class="note">force_pw.cpp:66 · stress_pw.cpp:86</span></td><td><span class="pill ok">一致</span></td><td>这些是<b>对照物</b>：AD 必须能逐项对上</td></tr>
+</table>
+
+<blockquote><b>第 5 条值得单独说。</b>ABACUS 的预表化不是效率选择，而是切断了 β 对晶胞的导数链。所以"我们的应力 ≠ ABACUS 的应力"在某些体系上不是 bug，而是我们多了一项。这一点必须写进差异预算表，否则会陷入"追一个永远追不上的数"。</blockquote>
+
+<h2><span class="num">04</span>已经在原型上踩到的四个真 bug</h2>
+
+<p>这四个都不是"语法错误"，而是<b>能量看起来完全正确、梯度错了 20%</b> 的那类。它们的价值在于：每一个都对应一条可执行的不变量，而那条不变量是事后才补上的。</p>
+
+<table>
+  <tr><th style="width:34px">#</th><th>症状</th><th>根因</th><th style="width:190px">被哪条判据抓住</th></tr>
+  <tr><td>1</td><td>力偏 <b>20%</b>，能量完全正确</td><td>用了"显式泛函"形式（固定密度下对 ψ 不驻定），丢掉响应项</td><td><span class="pill info">驻点性 ∂E/∂n=0</span></td></tr>
+  <tr><td>2</td><td>XC 势弱 <b>8 倍</b>，力偏 25%</td><td>泛函导数漏 <code>(Ω/N)</code> 权重：<code>jax.grad(E)</code> 给的是偏导，物理势是泛函导数</td><td><span class="pill info">驻点性 + ΔE≈∫vδn</span></td></tr>
+  <tr><td>3</td><td>两种能量形式差 <b>0.046 Ha</b></td><td><code>V_NL</code> 没进哈密顿量，而能量分解里又有它</td><td><span class="pill info">I-7 双形式一致</span></td></tr>
+  <tr><td>4</td><td>势矩阵是垃圾，SCF 仍然"收敛"</td><td><code>fftn</code> 作用在扁平数组上（沿错轴）</td><td><span class="pill info">I-8 ⟨V⟩ = ∫v|ψ|²</span></td></tr>
+  <tr><td>5</td><td>力偏 <b>31%</b>，ΣF=7.7e-2，能量只差 3 mHa</td><td><code>vg.astype(rho_r.dtype)</code> 把 complex 静默转成 float，丢掉 n_G 的虚部，破坏 n(−G)=n(G)*</td><td><span class="pill info">v(ρ+δ)−v(ρ) = v(δ)</span></td></tr>
+</table>
+
+<div class="card" style="margin-top:16px">
+  <div class="k">一个反直觉的结论（实测，不是推导）</div>
+  <p style="margin-top:8px">在对称构型上，<code>jax.jacfwd</code> 穿过 <code>eigh</code> 会给出 <code>1/(εₙ−εₘ) = 1/0</code> → AD 力<b>全为 NaN</b>，而有限差分给出 0。如果只看 FD，会得出"力是零，所以没问题"的错误结论。这就是 D4 级（简并子空间）的典型失败模式，也是本项目禁用"对本征值求导"的原因。</p>
+  <p class="note">替代方案：解析一阶微扰 + 简并安全替换 <code>(fₙ−fₘ)/(εₙ−εₘ) → f'(ε̄)</code>。这不是数值技巧，而是占据加权密度矩阵在简并点的唯一连续延拓。</p>
+</div>
+
+<h2><span class="num">05</span>校验方案：五级阶梯 + 五步协议</h2>
+
+<p>对齐不是一次动作，而是阶梯。每一级有明确的判据与<b>失败含义</b>，必须按顺序通过——跳过任何一级，后面的失败都无法归因。</p>
+
+<table>
+  <tr><th style="width:60px">级别</th><th>对齐对象</th><th style="width:250px">判据</th><th style="width:250px">失败的含义</th></tr>
+  <tr><td><b>L0</b></td><td>单元：每个原语 vs ref / 解析解</td><td>逐元素 &lt; 1e-10</td><td>实现错误，与物理无关</td></tr>
+  <tr><td><b>L1</b></td><td>解析极限：UEG、高斯 Hartree、Madelung</td><td>能量 &lt; 1 meV/atom</td><td>公式或单位错</td></tr>
+  <tr><td><b>L2</b></td><td>内部一致性：梯度 vs FD；不变量</td><td>力 &lt; 1e-4 eV/Å；应力 &lt; 0.1 kbar</td><td>VJP 错，或图被剪断</td></tr>
+  <tr><td><b>L3</b></td><td>跨代码：vs ABACUS（同参数）</td><td>能量 &lt; 1 meV/atom；力 &lt; 10 meV/Å</td><td><b>约定</b>不一致</td></tr>
+  <tr><td><b>L4</b></td><td>物理标尺：EOS、声子、Born 电荷</td><td>在已知误差内</td><td>泛函/离散化不足（是选择，不是 bug）</td></tr>
+</table>
+
+<p class="sub">把 L2（求导错）与 L3（约定错）混在一起调，是项目延期最常见的原因。</p>
+
+<h3>五步协议：顺序不能颠倒</h3>
+<ol class="seq">
+  <li><b>算噪声地板</b><span>δF ≈ δE/(2h) ≈ 0.13 meV/Å。任何小于它的项，FD 看不见——所以第一步必须先知道"能看见什么"。</span></li>
+  <li><b>项级消融</b><span>每个能量项带 tag，自动跑"全开/逐个关/两两关"。得到每项量级，以及项与项的抵消结构（相消对）。</span></li>
+  <li><b>构型扫描</b><span>平衡、±1% 应变、单原子位移 0.05 Å、低对称畸变，四个必须同时通过。补偿系数依赖构型，换构型就失效。</span></li>
+  <li><b>恒等式</b><span>构型无关，因此优先级高于 FD：平移/旋转不变、ΣF=0、声学求和、驻点性、表示一致、响应一致。</span></li>
+  <li><b>交叉实现</b><span>同一物理量两条独立路径：AD 伴随 vs 中心差分；显式泛函 vs 变分形式。同时错的概率远低于任一单独错。</span></li>
+</ol>
+
+<div class="grid g2" style="margin-top:20px">
+  <div class="card">
+    <div class="k">反作弊七条（违反任一，加速比按 0 计）</div>
+    <table style="margin:8px 0">
+      <tr><td style="width:28px">1</td><td>同精度：能量漂移 ≤0.1 meV/atom，残差 ≤1e-8</td></tr>
+      <tr><td>2</td><td>同输入：赝势 sha256、libxc ID、ecut、k 网格</td></tr>
+      <tr><td>3</td><td>端到端计数，含 I/O 与 Python 调度</td></tr>
+      <tr><td>4</td><td>冷/热启动分开报告，不许混用</td></tr>
+      <tr><td>5</td><td>5 次中位数 + IQR，禁止删点</td></tr>
+      <tr><td>6</td><td>&gt;10% 的加速必须附因子归因</td></tr>
+      <tr><td>7</td><td>近似模式必须在同一份报告里打开</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <div class="k">封存 oracle：唯一能对抗过拟合的机制</div>
+    <p style="font-size:13.5px;margin-top:8px">LLM 的稳定行为是"把测试通过当作目标"。因此测试必须部分隐藏，且隐藏部分的<b>分布要与公开部分不同</b>——按物理情形切分，不按随机切分。</p>
+    <p class="note">公开集：绝缘体、平衡构型、单元素。封存集：金属、简并、极端形变、NLCC、多元素。每季度轮换 1/3；首次通过率 &gt;90% 视为泄漏嫌疑。</p>
+  </div>
+</div>
+
+<h2><span class="num">06</span>任务分解：22 个模块 + 5 个里程碑</h2>
+
+<p>不用阶段表，因为阶段表隐含"所有人朝同一个功能前进"，与 1–2 周模块粒度不兼容。DAG 允许"三条链并行、在里程碑处汇合"。</p>
+
+<pre><span class="c">契约与基础设施</span>   K01 契约库 ─┬─ K02 几何/晶胞 ─┬─ K03 k 网格/对称性
+                              │                 └─ K04 G 壳层/FFT 盒
+<span class="c">物理原语</span>          K05 UPF 解析 ── K08 非局域投影 ── K13 力/应力
+                  K04 ── K06 密度/Hartree
+                  K04 ── K07 XC(energy-only) ── K09 本征求解 ── K10 占据/费米能
+<span class="c">求解器</span>            K06..K10 ── K11 SCF 不动点 ── <b>K12 响应算子/伴随</b> ── K14 极化
+                                                              └─ K15 约束 DFT
+<span class="c">元工具（M0 就要有）</span> K17 七因子 harness   K18 五步协议 harness   K19 封存服务
+<span class="c">下沉与探索</span>       K20 内核下沉   K21 自适应基组   K22 可微离散化
+
+<span class="c">三条关键路径：</span>
+  赝势链  K05 → K08 → K13      没有正确的 β/D，力一定是错的
+  本征链  K09 → K10 → K12      本征有噪声 → 占据有噪声 → 伴随不收敛
+  基组链  K04 → K06 → K07      最短，但是所有能量的底</pre>
+
+<table style="margin-top:18px">
+  <tr><th style="width:56px">里程碑</th><th style="width:96px">时间</th><th>必须已验证</th><th style="width:300px">判据</th><th style="width:190px">失败处理</th></tr>
+  <tr><td><b>M0</b></td><td>0–1.5 月</td><td>K01,K04,K06,K07 + 两个 harness</td><td>三条求导路径；误差&lt;1e-4；成本&lt;3×SCF</td><td>回退到"ABACUS + 可微插件"</td></tr>
+  <tr><td><b>M1</b></td><td>1.5–6 月</td><td>K02–K09,K13</td><td>Si/NaCl/Al₂O₃：&lt;1 meV/atom、&lt;10 meV/Å、&lt;0.5 kbar</td><td>降级为"能量引擎"</td></tr>
+  <tr><td><b>M2</b></td><td>6–12 月</td><td>K10,K11,K17</td><td>Al/Cu/Fe 对齐；单点保底 5×</td><td>收缩为绝缘体</td></tr>
+  <tr><td><b>M3</b></td><td>12–19 月</td><td>K12,K14,K15,K18</td><td>Born 电荷 vs DFPT&lt;5%；工作流 100×</td><td>极化降级为 FD，保 ΔSpin/ΔQ</td></tr>
+  <tr><td><b>M4</b></td><td>19–24 月</td><td>全部 + 一条探索线</td><td>10 材料 benchmark；API 冻结</td><td>砍探索线，保交付</td></tr>
+</table>
+
+<blockquote><b>M0 的意义：用六周买一个"要不要继续"的答案。</b>它包含三件事——五份契约、Si/Γ/LDA/20 Ry 的判别实验、以及两个 harness。三件事都不需要 GPU：在物理与验证都跑通之前，GPU 只会让错误跑得更快。</blockquote>
+
+<h2><span class="num">07</span>当前状态</h2>
+
+<table>
+  <tr><th>判据</th><th style="width:210px">目标</th><th style="width:250px">实测</th><th style="width:86px">状态</th></tr>
+  <tr><td>SCF 收敛（DIIS）</td><td>&lt; 1e-10</td><td>2.0e-13 / 73 步</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td>两种能量形式 I-7</td><td>&lt; 1e-12</td><td>0</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td>响应算子 = ∂F/∂n（I-15）</td><td>corr &gt; 0.999</td><td>corr 1.0000 / rel 6.7e-9</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td>ΣF = 0（I-10）</td><td>&lt; 1e-8</td><td>4.2e-8 Ha/Bohr</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td>力 vs 有限差分</td><td>&lt; 1e-4 eV/Å</td><td>5.7e-7 Ha/Bohr ≈ 3e-5 eV/Å</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td>FD 残差 ∝ h²</td><td>ratio ∈ (3,5)</td><td>4.0</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td>力 vs Richardson 外推</td><td>&lt; 1e-8</td><td>3.1e-12</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td>Hartree 平面波精确解 / 精确线性</td><td>&lt; 1e-10</td><td>4.1e-15 / 3.3e-16</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td>XC 势点级 oracle</td><td>&lt; 1e-10</td><td>4.4e-16</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td>Ewald η 无关 / 平移不变</td><td>&lt; 2e-4 / 1e-12</td><td>1.0e-4 / 2.2e-16</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td>矩阵 vs 网格表示 I-8</td><td>&lt; 1e-10</td><td>rel 3.0e-1（与 nfft 无关）</td><td><span class="pill warn">诊断</span></td></tr>
+  <tr><td>稠密 V_NL Hermitian</td><td>&lt; 1e-12</td><td>1.3e-3（范数 9.3e-3）</td><td><span class="pill warn">诊断</span></td></tr>
+  <tr><td>手工 ∫|ψ|² = 1</td><td>= 1</td><td>2.1e-3（密度仍积到 4）</td><td><span class="pill warn">诊断</span></td></tr>
+</table>
+
+<p style="margin-top:18px">15 项通过，3 项未通过。**未通过的三项互为线索**：它们都指向 <code>projectors()</code> 与 ψ↔r 辅助函数之间的一处约定不一致；在"全程用同一条路径"时自洽，所以能量与力不受影响——但这正是下一轮必须清掉的技术债。</p>
+
+<pre><span class="c">已闭合的因果链（每一步都留下了可复跑的判据）</span>
+complex→float 静默转换  ──►  Hartree 势丢失 n_G 虚部
+        │                        │
+        │                        ├─► 能量形式互不自洽（I-7 差 3e-2）
+        │                        ├─► ΣF ≠ 0（7.7e-2）
+        │                        └─► 响应算子 ≠ ∂F/∂n（corr 0.66）
+        │
+        └─► 修复后：I-7 = 0 ；I-15 corr 1.0000 ；ΣF = 4.2e-8 ；力 vs Richardson 3.1e-12
+
+<span class="c">下一轮（K04+K08 合并卡）：判据是三项诊断同时通过</span>
+   ⟨ψ|V|ψ⟩ = (Ω/N)Σv|ψ|²      ∫|ψ|²dr = 1      稠密 V_NL 为 Hermitian</pre>
+
+<blockquote>值得记住的对照：第 5 个 bug 只需**一行代码**（去掉 <code>.astype()</code>），
+却让 SCF 收敛、能量只差 3 mHa、所有"看起来合理"的检查全绿，而力偏 31%。
+抓它的判据也只有一行：<code>v(ρ+δ) − v(ρ) == v(δ)</code>。<br>
+<b>可微 DFT 的成本不在写公式，在于为每一条公式配一条能把它证伪的检查。</b></blockquote>
+
+<h2><span class="num">08</span>三件最先要做的事</h2>
+
+<ol class="seq">
+  <li><b>写五份契约，一周内评审</b><span>单位、离散化、赝势、占据、不变量。没有它，任务卡无法引用，对抗结构无法启动。</span></li>
+  <li><b>做 M0 判别实验，六周</b><span>Si、Γ、LDA、20 Ry，三条求导路径，回答"隐式伴随是否成立"。这是唯一允许"先做再决定"的环节。</span></li>
+  <li><b>同时建两个 harness，而不是等有东西可比</b><span>验证 harness 要能在已知错项上证明自己能抓错；性能 harness 要能在最小体系上跑七因子代理指标。它们验证的是"我们的验证有效"。</span></li>
+</ol>
+
+<p style="margin-top:24px">如果只能记住一句话：<b>架构的价值不在于它看起来合理，而在于每一个设计决定都绑定了一条能被独立证伪的检验</b>——并且这些检验已经抓到了四个真 bug，其中两个是"能量完全正确、梯度错 20%"的那种。</p>
+
+<footer>
+  ad-dft · 架构与校验 · v0.1 &nbsp;|&nbsp; 依据：abacus-develop 源码实测 · DQC AD 契约 · 可微DFT复刻方案 V2<br>
+  交付物：docs/ARCHITECTURE.md · docs/TASKS.md · docs/VALIDATION.md · docs/ABACUS_FACTS.md · spec/ ×5 · src/ 原型 · tests/ 4 个门禁
+</footer>
+
+</div>
+</body>
+</html>
