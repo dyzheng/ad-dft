@@ -46,7 +46,7 @@ def make_response(geo: Cell, static: Static, state: SCFState, tol: float = 1e-6)
     nfft = basis.nfft
     lat = geo.lattice
     q2 = g2(basis, lat)
-    kxc = jax.vmap(xc.xc_kernel_point)(state.rho_r)  # (nfft,)
+    kxc = xc.xc_kernel_r(state.rho_r)  # (nfft,)
     eig, vec = _full_eigensystem(geo, static, state)
     nband = static.nband
     sigma = static.sigma
@@ -82,10 +82,13 @@ def make_response(geo: Cell, static: Static, state: SCFState, tol: float = 1e-6)
             coef = M * wgt  # coef[m,n] = M_mn/(ε_n−ε_m)
 
             f = jnp.concatenate([state.occ[ik], jnp.zeros(eig.shape[-1] - nband)])
-            fprime = f * (1.0 - f) / sigma
-            denom = jnp.sum(w[ik] * fprime) + 1e-30
-            dmu = jnp.sum(w[ik] * fprime * deps) / denom
-            df = fprime * (deps - dmu)
+            if sigma > 1e-6:
+                fprime = f * (1.0 - f) / sigma
+                denom = jnp.sum(w[ik] * fprime) + 1e-30
+                dmu = jnp.sum(w[ik] * fprime * deps) / denom
+                df = fprime * (deps - dmu)
+            else:  # 整数占据：占据数不随 ε 变，响应项为零
+                df = jnp.zeros_like(f)
 
             dc = (C @ coef)[:, :nband].T  # (nband, nG)
             psi_r = psi_to_real(basis, lat, state.psi[ik])

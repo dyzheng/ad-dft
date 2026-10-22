@@ -15,16 +15,31 @@
 
 from __future__ import annotations
 
+import os
+
 import jax
 import jax.numpy as jnp
+
+try:
+    from .libxc_bridge import libxc_lda_energy_density, libxc_lda_kernel
+    _HAVE_LIBXC = True
+except Exception:  # pragma: no cover - 取决于系统是否装了 libxc
+    _HAVE_LIBXC = False
+
+USE_LIBXC = os.environ.get("ADDFT_XC", "libxc") != "analytic"
+if USE_LIBXC and not _HAVE_LIBXC:
+    raise ImportError("找不到 libxc；设置 ADDFT_XC=analytic 使用解析 PZ81 fallback")
+
+XC_LDA_X = 1
+XC_LDA_C_PZ = 9
 
 from ..geometry.basis import Basis, density_g, gvectors, real_from_g
 from ..geometry.cell import volume
 
 # ---------------------------------------------------------------- LDA (PZ81)
 
-_A, _B, _C, _D = 0.0311, -0.048, 0.0020, -0.0116  # Ry, rs < 1
-_G, _B1, _B2 = -0.1423, 1.0529, 0.3334  # Ry, rs >= 1
+_A, _B, _C, _D = 0.0311, -0.048, 0.0020, -0.0116  # Ha, rs < 1
+_G, _B1, _B2 = -0.1423, 1.0529, 0.3334  # Ha, rs >= 1
 
 
 def _eps_x(n):
@@ -39,7 +54,7 @@ def _eps_c(n):
     rs = jnp.power(3.0 / (4.0 * jnp.pi * n), 1.0 / 3.0)
     small = _A * jnp.log(rs) + _B + _C * rs * jnp.log(rs) + _D * rs
     large = _G / (1.0 + _B1 * jnp.sqrt(rs) + _B2 * rs)
-    return 0.5 * jnp.where(rs < 1.0, small, large)
+    return jnp.where(rs < 1.0, small, large)
 
 
 def lda_energy_density(n):
@@ -80,19 +95,30 @@ def lda_c_energy_density(n):
     return n * _eps_c(n)
 
 
+def _analytic_lda_energy(basis, lattice, rho_r):
+    return (volume(lattice) / basis.nfft) * jnp.sum(lda_energy_density(rho_r))
+
+
 def xc_energy_lda(basis: Basis, lattice, rho_r):
-    omega = volume(lattice)
-    return (omega / basis.nfft) * jnp.sum(lda_energy_density(rho_r))
+    if not USE_LIBXC:
+        return _analytic_lda_energy(basis, lattice, rho_r)
+    e = libxc_lda_energy_density(rho_r, XC_LDA_X)
+    e = e + libxc_lda_energy_density(rho_r, XC_LDA_C_PZ)
+    return (volume(lattice) / basis.nfft) * jnp.sum(e)
 
 
 def exchange_energy_lda(basis: Basis, lattice, rho_r):
-    omega = volume(lattice)
-    return (omega / basis.nfft) * jnp.sum(lda_x_energy_density(rho_r))
+    if not USE_LIBXC:
+        return (volume(lattice) / basis.nfft) * jnp.sum(lda_x_energy_density(rho_r))
+    e = libxc_lda_energy_density(rho_r, XC_LDA_X)
+    return (volume(lattice) / basis.nfft) * jnp.sum(e)
 
 
 def correlation_energy_lda(basis: Basis, lattice, rho_r):
-    omega = volume(lattice)
-    return (omega / basis.nfft) * jnp.sum(lda_c_energy_density(rho_r))
+    if not USE_LIBXC:
+        return (volume(lattice) / basis.nfft) * jnp.sum(lda_c_energy_density(rho_r))
+    e = libxc_lda_energy_density(rho_r, XC_LDA_C_PZ)
+    return (volume(lattice) / basis.nfft) * jnp.sum(e)
 
 
 def gga_model_energy_density(n, sigma):
@@ -138,3 +164,11 @@ def xc_potential_point(n):
 def xc_kernel_point(n):
     """单点 K_xc(n) = d²[n·ε(n)]/dn² —— 响应算子里的对角核。"""
     return jax.grad(xc_potential_point)(n)
+
+
+def xc_kernel_r(n):
+    """整个网格上的对角核，一次 host callback，避免对 callback 做 vmap。"""
+    if not USE_LIBXC:
+        return jax.vmap(xc_kernel_point)(n)
+    return (libxc_lda_kernel(n, XC_LDA_X) +
+            libxc_lda_kernel(n, XC_LDA_C_PZ))
