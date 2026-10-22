@@ -52,7 +52,7 @@ def projectors(psp: Pseudo, spec_idx, basis: Basis, cell: Cell, kpts):
     for ik in range(int(kpts.shape[0])):
         gk = gvectors(basis, cell.lattice, kpts[ik])  # (nG, 3)
         q = jnp.sqrt(jnp.sum(gk * gk, axis=-1))  # (nG,)
-        ylm = ylm_real(int(psp.lmax), gk)  # (nG,(lmax+1)^2)
+        ylm = ylm_real(int(psp.lmax[int(spec_idx[0])]), gk)  # (nG,(lmax+1)^2)
         phase = jnp.exp(-1j * (gk @ r.T))  # (nG, nat)
         rows = []
         for i in range(nat):

@@ -18,24 +18,27 @@
    原因：预插值切断 `∂β/∂q · ∂q/∂cell` 两条链，力少一项、应力丢整个缩放项。
    **验收**：同一赝势下，预表化路径与本路径的能量差 < 0.1 meV/atom，
    且本路径在应变下的应力与有限差分一致（预表化路径不会一致）。
-2. **NLCC 要么实现、要么显式拒绝**。不允许"读了但不用"这种静默行为。
-   V0 选择：解析 `rho_atc` 并在 XC 密度上叠加；与 ABACUS 对比时把该差异
-   列入差异预算（1–5 meV/atom），并在报告头显式标记 `nlcc=on/off`。
+2. **NLCC 显式拒绝**。不允许"读了但不用"这种静默行为。R3 解析 `rho_atc`，
+   但 `from_upf` 在 `nlcc=True` 时直接 `NotImplementedError`；V1 再实现。
+   与 ABACUS 对比时报告头显式标记 `nlcc=off`。
 
 ## 3. 接口
 
 ```python
 class Pseudo(NamedTuple):     # 静态数据，不参与微分
-    zval, vloc_amp, vloc_sigma,
-    proj_l, proj_w, proj_b, dion
+    kind,                     # 0=synthetic, 1=UPF
+    zval, vloc_amp, vloc_sigma, proj_l, proj_w, proj_b, dion,
+    r, rab, vloc_at,          # UPF: Ry 原始；from_upf 的 dion 已 /2 -> Ha
+    betar, rho_atc, nlcc, lmax
 
-vloc_q(psp, spec_idx, q)      # (nat, nG) 或 (nG,)
-beta_q(psp, spec_idx, q)      # (nproj, nG) —— 每次重建
-projectors(psp, spec_idx, basis, cell, kpts) -> (nk, nat*nproj, nG)
+vloc_q(psp, spec_idx, q)      # (nat, nG) 或 (nG,)；UPF 路径含 z·erf 加减项
+beta_q(psp, spec_idx, q)      # (nrad, nG)，含 ABACUS 表的 4π 前因子
+projectors(psp, spec_idx, basis, cell, kpts) -> (nk, nat*nh, nG)
 ```
 
-`D` 的块对角构造必须是 `(nat, nat, nproj, nproj)` 再 reshape，
-**不能**用 `(nat, nproj, nproj).reshape(nat*npj, nat*npj)`（会把块拼错）。
+`D` 的块对角构造必须是 `(nat, nh, nat, nh)` 再 reshape（`nh=Σ(2l+1)`），
+**不能**用 `(nat, nat, nh, nh)`（会把不同原子的块交错成非 Hermitian 矩阵）。
+UPF 原始 `PP_DIJ` 是 Ry；`from_upf` 只在这里做 `/2`。
 
 ## 4. 失败模式
 

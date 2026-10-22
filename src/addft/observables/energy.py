@@ -40,7 +40,20 @@ def energy_terms(geo: Cell, static: Static, state: SCFState, active=ALL_TAGS):
     if "kinetic" in active:
         out["kinetic"] = _kinetic(geo, static, state)
     if "local" in active:
-        out["local"] = local_energy(static.psp, static.spec_idx, basis, geo, state.rho_r)[0]
+        # 真实 UPF 的 vloc 不是带限函数：实空间积分与矩阵表示会出现混叠差。
+        # 生产能量必须与 H 走同一条矩阵路径，保持对 ψ 的驻定性。
+        from ..physics.local import local_potential_r
+        from ..solver.scf import vmat_from_real
+
+        vloc = local_potential_r(static.psp, static.spec_idx, basis, geo)
+        vm = vmat_from_real(basis, vloc)
+        e_loc = jnp.asarray(0.0)
+        for ik in range(int(static.kpts.shape[0])):
+            hpsi = jnp.einsum("mn,bn->bm", vm, state.psi[ik])
+            e_loc = e_loc + static.kweights[ik] * jnp.sum(
+                state.occ[ik] * static.spin_degeneracy *
+                jnp.real(jnp.sum(jnp.conj(state.psi[ik]) * hpsi, axis=-1)))
+        out["local"] = e_loc
     if "hartree" in active:
         out["hartree"] = hartree.hartree_energy(basis, geo.lattice, state.rho_r)
     if "exchange" in active:
