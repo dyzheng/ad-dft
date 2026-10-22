@@ -22,14 +22,18 @@ from ..geometry.psp import Pseudo, beta_q
 
 
 def dion_full(psp: Pseudo, spec_idx) -> jnp.ndarray:
-    """(nat*nproj, nat*nproj) 分块对角的 D 矩阵。"""
-    nat = int(spec_idx.shape[0])
-    npj = psp.nproj
-    # (nat, nat, npj, npj) 的「块对角」张量：只有 i==j 的块非零
-    d = jnp.zeros((nat, nat, npj, npj), dtype=jnp.float64)
+    """(nat*nproj, nat*nproj) 的块对角 D。
+
+    关键：块索引必须放在 (i, p, j, q)，reshape 后全局行=(i,p)、列=(j,q)。
+    不能写成 (i, j, p, q) —— 那会把不同原子的块交错成非 Hermitian 矩阵。
+    """
+    si = jnp.asarray(spec_idx)
+    nat = int(si.shape[0])
+    npr = psp.nproj
+    d = jnp.zeros((nat, npr, nat, npr), dtype=psp.dion.dtype)
     for i in range(nat):
-        d = d.at[i, i].set(psp.dion[jnp.asarray(spec_idx)[i]])
-    return d.reshape(nat * npj, nat * npj)
+        d = d.at[i, :, i, :].set(psp.dion[si[i]])
+    return d.reshape(nat * npr, nat * npr)
 
 
 def projectors(psp: Pseudo, spec_idx, basis: Basis, cell: Cell, kpts):

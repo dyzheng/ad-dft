@@ -137,12 +137,6 @@ def test_ewald_translation_invariant(system):
     assert abs(float(e0 - e1)) < 1e-12
 
 
-@pytest.mark.xfail(reason="【诊断项，非门禁】⟨ψ|V|ψ⟩ 与 (Ω/N)Σv|ψ|² 相差 30%，且该比值"
-                          "在 nfft 729→3375 上完全不变（排除混叠）。同时手工计算的 "
-                          "∫|ψ|²=2.1e-3 与 ‖c‖²=1 不自洽，而密度仍积分到 4。"
-                          "说明 ψ↔r 辅助函数存在一处只在'手工调用'时暴露的归一化/reshape 问题；"
-                          "物理路径（E、H、力）内部一致，故不阻塞。见 ARCHITECTURE §8 缺陷 6。",
-                   strict=True)
 def test_matrix_vs_grid_representation(system):
     basis = system.static.basis
     st = ad.scf(system)
@@ -150,16 +144,12 @@ def test_matrix_vs_grid_representation(system):
     vg = density_g(basis, LATTICE, st.rho_r)
     v = real_from_g(basis, LATTICE, vg)
     psi = st.psi[0][0]
-    psi_r = psi_to_real(basis, LATTICE, psi)[0]
+    psi_r = psi_to_real(basis, LATTICE, psi)
     mat = jnp.real(jnp.vdot(psi, vmat_from_real(basis, v) @ psi))
     integ = (om / n) * jnp.sum(v * jnp.abs(psi_r) ** 2)
     assert abs(float(mat - integ)) < 1e-10
 
 
-@pytest.mark.xfail(reason="【诊断项，非门禁】稠密 V_NL 的 Hermitian 误差 1.3e-3（算子范数 9.3e-3，"
-                          "相对 14%），vnl_apply 与稠密矩阵一致到 3e-16，因此问题在 projectors() 的"
-                          "结构因子/共轭约定，而不在 apply。H 内部做了显式 Hermitian 化，"
-                          "故本征值仍为实数、能量与力不受影响。见 K08。", strict=True)
 def test_nonlocal_operator_is_hermitian(system):
     basis = system.static.basis
     st = ad.scf(system)
@@ -173,3 +163,21 @@ def test_nonlocal_operator_is_hermitian(system):
     lhs = jnp.sum(jnp.conj(y[None]) * ax)
     rhs = jnp.sum(jnp.conj(ay) * x[None])
     assert abs(complex(lhs - rhs)) < 1e-10 * max(abs(complex(lhs)), 1.0)
+
+
+def test_dion_packing_is_block_diagonal():
+    """I-9 的构造性前提：D 必须是按原子分块的块对角矩阵。
+
+    旧实现 (nat,nat,npj,npj).reshape(...) 会把 D[0,1] 块摊到全局
+    row 0 / col 3，导致算子不再 Hermitian；这个测试直接锁住布局。
+    """
+    from addft.physics.nonlocal_op import dion_full
+    from addft.geometry.psp import synthetic
+
+    psp = synthetic()
+    si = jnp.array([0, 0], dtype=jnp.int32)
+    d = dion_full(psp, si)
+    assert d.shape == (4, 4)
+    assert float(jnp.max(jnp.abs(d - jnp.conj(d).T))) < 1e-14
+    assert float(jnp.max(jnp.abs(d[2:, :2]))) < 1e-14
+    assert float(jnp.max(jnp.abs(d[:2, 2:]))) < 1e-14
