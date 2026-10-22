@@ -26,6 +26,12 @@ sigma_Ha = smearing_sigma_Ry / 2
 转换**只允许**出现在 `adapters/abacus/` 与输出格式化处。CI 的 `contract-check`
 扫描 `src/` 下是否出现 `*_to_ry` / `*_to_ha` 的调用，出现即失败。
 
+## UPF / libxc 边界
+
+- UPF `PP_LOCAL`、`PP_DIJ`、`betar` 原始为 Ry 制；`from_upf` 只在这里做 `/2`。
+- libxc 使用 Ha（`xc_lda_exc_vxc` 的 `zk` 是 Ha/粒子）；不引入第二套单位。
+- `beta_q` 含 ABACUS 表的 `4π` 前因子；`local_potential_g` 再除 `Ω`。
+
 ## 倒空间约定
 
 ```

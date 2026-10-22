@@ -96,7 +96,7 @@
 <header class="hero">
   <div class="tag">Architecture Review · v0.1</div>
   <h1>可微周期性 DFT 内核<br><em>契约复刻 ABACUS，架构重新搭建</em></h1>
-  <p class="lede">能量是唯一可微标量，力、应力、极化、约束乘子都是它的导数；SCF 用不动点隐式微分，显存与迭代数解耦。复刻的是 ABACUS 的<strong>物理契约</strong>，不是它的代码。本页给出分层架构、22 个模块的任务分解、五级校验方案——以及实测下来仍未通过的那 6 项。</p>
+  <p class="lede">能量是唯一可微标量，力、应力、极化、约束乘子都是它的导数；SCF 用不动点隐式微分，显存与迭代数解耦。复刻的是 ABACUS 的<strong>物理契约</strong>，不是它的代码。本页给出分层架构、22 个模块的任务分解、五级校验方案——以及 R3 收口后的实测状态。</p>
   <div class="meta">
     <span>依据：abacus-develop（develop）源码实测</span>
     <span>参照：DQC 的 AD 契约</span>
@@ -106,25 +106,25 @@
 
 <h2><span class="num">01</span>先说结论：什么已经成立，什么还不成立</h2>
 
-<p>这套架构的赌注是三句话，每一句都能被独立证伪。原型跑下来，<b>能量层与梯度层都立住了</b>。验证体系在发布前挡下了 <b>5 个"能量完全正确、梯度错 20–31%"</b> 的 bug——其中最后一个只花一行代码，却让 SCF 收敛、能量差 3 mHa、而力偏 31%。</p>
+<p>这套架构的赌注是三句话，每一句都能被独立证伪。原型跑下来，<b>能量层与梯度层都立住了</b>。验证体系在发布前挡下了 <b>9 个"能量完全正确、梯度错 20–31%"</b> 的 bug——其中最贵的一个只花一行代码，却让 SCF 收敛、能量差 3 mHa、而力偏 31%。</p>
 
 <div class="kpi">
-  <div><div class="lab">SCF 收敛</div><div class="val ok">73 步 / 2e-13</div></div>
-  <div><div class="lab">已修缺陷</div><div class="val ok">5 个</div></div>
-  <div><div class="lab">未通过判据</div><div class="val warn">3 项（诊断）</div></div>
-  <div><div class="lab">力 vs FD</div><div class="val ok">3e-12</div></div>
+  <div><div class="lab">SCF 收敛</div><div class="val ok">80 步 / 3.7e-13</div></div>
+  <div><div class="lab">已修缺陷</div><div class="val ok">9 个</div></div>
+  <div><div class="lab">内部未通过判据</div><div class="val ok">0 项</div></div>
+  <div><div class="lab">力 vs FD</div><div class="val ok">5.66e-7 Ha/Bohr</div></div>
 </div>
 
 <div class="grid g3" style="margin-top:22px">
   <div class="card">
     <div class="k">已经成立的</div>
     <div class="v ok" style="font-size:15px">能量层 + 梯度层 + 离散化契约</div>
-    <p class="note">SCF 收敛到 2e-13；两种能量形式差 0；响应算子 corr 1.0000（rel 6.7e-9）；ΣF=4.2e-8；力 vs 有限差分随 h² 收敛，Richardson 外推后差 3.1e-12。</p>
+    <p class="note">SCF 收敛到 3.7e-13；两种能量形式差 0；I-15 在 nfft=3375 上 rel 1.14e-6；ΣF=5.4e-8；力 vs 有限差分 gap 5.66e-7 Ha/Bohr（∝h²）；ΔQ 伴随 vs FD rel 1.65e-5。</p>
   </div>
   <div class="card">
-    <div class="k">还不成立的</div>
-    <div class="v warn" style="font-size:15px">三项诊断缺口</div>
-    <p class="note">⟨ψ|V|ψ⟩ 与 ∫v|ψ|² 差 30%（且与 nfft 无关）；手工 ∫|ψ|²≠1；稠密 V_NL 的 Hermitian 误差 14%。三者互为线索，指向同一处约定不一致，但不影响能量与力。</p>
+    <div class="k">外部对照仍未闭合</div>
+    <div class="v warn" style="font-size:15px">ABACUS E/F/σ</div>
+    <p class="note">沙箱内 MPI/PMIx 启动失败（F4）；归档 Si/Γ 参考仍差 31 meV/atom（F5），超过 10 meV/atom 门槛。内部判据全部通过，但 M0 外部验收仍是 NO-GO。</p>
   </div>
   <div class="card">
     <div class="k">唯一根因</div>
@@ -301,22 +301,22 @@ class Static(NamedTuple):
 
 <table>
   <tr><th>判据</th><th style="width:210px">目标</th><th style="width:250px">实测</th><th style="width:86px">状态</th></tr>
-  <tr><td>SCF 收敛（DIIS）</td><td>&lt; 1e-10</td><td>2.0e-13 / 73 步</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td>SCF 收敛（DIIS）</td><td>&lt; 1e-10</td><td>3.7e-13 / 80 步</td><td><span class="pill ok">通过</span></td></tr>
   <tr><td>两种能量形式 I-7</td><td>&lt; 1e-12</td><td>0</td><td><span class="pill ok">通过</span></td></tr>
-  <tr><td>响应算子 = ∂F/∂n（I-15）</td><td>corr &gt; 0.999</td><td>corr 1.0000 / rel 6.7e-9</td><td><span class="pill ok">通过</span></td></tr>
-  <tr><td>ΣF = 0（I-10）</td><td>&lt; 1e-8</td><td>4.2e-8 Ha/Bohr</td><td><span class="pill ok">通过</span></td></tr>
-  <tr><td>力 vs 有限差分</td><td>&lt; 1e-4 eV/Å</td><td>5.7e-7 Ha/Bohr ≈ 3e-5 eV/Å</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td>响应算子 = ∂F/∂n（I-15）</td><td>corr &gt; 0.999</td><td>nfft=3375：corr 1.0000 / rel 1.14e-6</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td>ΣF = 0（I-10）</td><td>&lt; 1e-8</td><td>5.4e-8 Ha/Bohr</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td>力 vs 有限差分</td><td>&lt; 1e-4 eV/Å</td><td>5.66e-7 Ha/Bohr ≈ 2.9e-5 eV/Å</td><td><span class="pill ok">通过</span></td></tr>
   <tr><td>FD 残差 ∝ h²</td><td>ratio ∈ (3,5)</td><td>4.0</td><td><span class="pill ok">通过</span></td></tr>
-  <tr><td>力 vs Richardson 外推</td><td>&lt; 1e-8</td><td>3.1e-12</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td>ΔQ 伴随 vs 重跑 SCF FD</td><td>&lt; 1e-4</td><td>residual 2.28e-11；rel 1.65e-5</td><td><span class="pill ok">通过</span></td></tr>
   <tr><td>Hartree 平面波精确解 / 精确线性</td><td>&lt; 1e-10</td><td>4.1e-15 / 3.3e-16</td><td><span class="pill ok">通过</span></td></tr>
   <tr><td>XC 势点级 oracle</td><td>&lt; 1e-10</td><td>4.4e-16</td><td><span class="pill ok">通过</span></td></tr>
   <tr><td>Ewald η 无关 / 平移不变</td><td>&lt; 2e-4 / 1e-12</td><td>1.0e-4 / 2.2e-16</td><td><span class="pill ok">通过</span></td></tr>
-  <tr><td>矩阵 vs 网格表示 I-8</td><td>&lt; 1e-10</td><td>rel 3.0e-1（与 nfft 无关）</td><td><span class="pill warn">诊断</span></td></tr>
-  <tr><td>稠密 V_NL Hermitian</td><td>&lt; 1e-12</td><td>1.3e-3（范数 9.3e-3）</td><td><span class="pill warn">诊断</span></td></tr>
-  <tr><td>手工 ∫|ψ|² = 1</td><td>= 1</td><td>2.1e-3（密度仍积到 4）</td><td><span class="pill warn">诊断</span></td></tr>
+  <tr><td>矩阵 vs 网格表示 I-8</td><td>&lt; 1e-10</td><td>abs 2.08e-17（rel 1.06e-15）</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td>稠密 V_NL Hermitian</td><td>&lt; 1e-10</td><td>abs 4.47e-18（范数 3.70e-3）</td><td><span class="pill ok">通过</span></td></tr>
+  <tr><td>手工 ∫|ψ|² = 1</td><td>= 1</td><td>3.33e-16</td><td><span class="pill ok">通过</span></td></tr>
 </table>
 
-<p style="margin-top:18px">15 项通过，3 项未通过。**未通过的三项互为线索**：它们都指向 <code>projectors()</code> 与 ψ↔r 辅助函数之间的一处约定不一致；在"全程用同一条路径"时自洽，所以能量与力不受影响——但这正是下一轮必须清掉的技术债。</p>
+<p style="margin-top:18px">本表 13 项内部判据全部通过。此前三项“诊断项”已由 R3-01 的 <code>dion_full</code> 布局与测试辅助函数修正；完整 18 项见 <code>docs/VALIDATION.md</code>。</p>
 
 <pre><span class="c">已闭合的因果链（每一步都留下了可复跑的判据）</span>
 complex→float 静默转换  ──►  Hartree 势丢失 n_G 虚部
@@ -325,9 +325,9 @@ complex→float 静默转换  ──►  Hartree 势丢失 n_G 虚部
         │                        ├─► ΣF ≠ 0（7.7e-2）
         │                        └─► 响应算子 ≠ ∂F/∂n（corr 0.66）
         │
-        └─► 修复后：I-7 = 0 ；I-15 corr 1.0000 ；ΣF = 4.2e-8 ；力 vs Richardson 3.1e-12
+        └─► 修复后：I-7 = 0 ；I-15 corr 1.0000 ；ΣF = 5.4e-8 ；力 vs FD 5.66e-7 Ha/Bohr
 
-<span class="c">下一轮（K04+K08 合并卡）：判据是三项诊断同时通过</span>
+<span class="c">R3 已清掉的三项诊断（K04+K08 合并卡）</span>
    ⟨ψ|V|ψ⟩ = (Ω/N)Σv|ψ|²      ∫|ψ|²dr = 1      稠密 V_NL 为 Hermitian</pre>
 
 <blockquote>值得记住的对照：第 5 个 bug 只需**一行代码**（去掉 <code>.astype()</code>），

@@ -210,7 +210,7 @@ perf-gate 只跑**代理指标**（几分钟可测），完整 benchmark 每周�
 
 | 检查 | 判据 | 实测 | 状态 |
 |---|---|---|---|
-| SCF 收敛（DIIS） | 残差 < 1e-10 | 2.0e-13，73 步 | ✅ |
+| SCF 收敛（DIIS） | 残差 < 1e-10 | 3.7e-13，80 步 | ✅ |
 | 电子数守恒 I-13 | < 1e-10 | 机器精度 | ✅ |
 | Ewald η 无关 I-4 | < 2e-4 | 1.0e-4 | ✅ |
 | Ewald 平移不变 | < 1e-12 | 2.2e-16 | ✅ |
@@ -221,21 +221,21 @@ perf-gate 只跑**代理指标**（几分钟可测），完整 benchmark 每周�
 | Hartree 精确线性性 | < 1e-10 | 3.3e-16 | ✅ |
 | XC 势点级 oracle | < 1e-10 | 4.4e-16 | ✅ |
 | 两种能量形式 I-7 | < 1e-12 | 0 | ✅ |
-| 响应算子 I-15 | corr>0.999 | corr 1.0000 / rel 6.7e-9 | ✅ |
-| 平移不变 ΣF I-10 | < 1e-8 | 4.2e-8 Ha/Bohr | ✅ |
-| 力 vs FD（h=1e-3） | < 1e-4 eV/Å | 5.7e-7 Ha/Bohr ≈ 3e-5 eV/Å | ✅ |
+| 响应算子 I-15 | corr>0.999 | nfft=729：corr 1.0000 / rel 8.5e-9；nfft=3375：rel 1.14e-6 | ✅ |
+| 平移不变 ΣF I-10 | < 1e-8 | 5.4e-8 Ha/Bohr | ✅ |
+| 力 vs FD（h=1e-3） | < 1e-4 eV/Å | 5.66e-7 Ha/Bohr ≈ 2.9e-5 eV/Å | ✅ |
 | FD 残差 ∝ h² | ratio∈(3,5) | 4.0 | ✅ |
-| 力 vs Richardson | < 1e-8 Ha/Bohr | 3.1e-12 | ✅ |
-| **矩阵 vs 网格表示 I-8** | < 1e-10 | rel 3.0e-1（且与 nfft 无关） | ⚠️ 诊断项 |
-| **稠密 V_NL Hermitian** | < 1e-12 | 1.3e-3（范数 9.3e-3） | ⚠️ 诊断项 |
-| **手工 ∫\|ψ\|²** | = 1 | 2.1e-3（密度仍积到 4） | ⚠️ 诊断项 |
+| 矩阵 vs 网格表示 I-8 | < 1e-10 | abs 2.08e-17（rel 1.06e-15） | ✅ |
+| 稠密 V_NL Hermitian | < 1e-10 | abs 4.47e-18（范数 3.70e-3） | ✅ |
+| 手工 ∫\|ψ\|² | = 1 | 3.33e-16 | ✅ |
 
 ### 8.2 读法
 
-15 项通过、3 项未通过。**未通过的三项互为线索**：`⟨ψ|V|ψ⟩ ≠ ∫v|ψ|²`、
-手工 `∫|ψ|² ≠ 1`、`V_NL` 非 Hermitian —— 都指向 `projectors()` 与 ψ↔r 辅助函数
-之间的一处约定不一致。它们在"全程用同一条路径"时自洽，因此能量与力不受影响，
-但这正是下一轮必须清掉的技术债（K04/K08 合并卡）。
+18 项内部判据全部通过。此前三项“诊断项”已由 R3-01 的 `dion_full` 布局与测试
+辅助函数修正，当前实测：矩阵/网格差 2.08e-17、V_NL 转置差 4.47e-18、
+手工 ∫|ψ|² 差 3.33e-16。外部 ABACUS E/F/σ 对照仍是 M0 的 NO-GO 项：
+沙箱无法启动 MPI/PMIx（F4），归档 Si 能量仍差 31 meV/atom（F5），详见
+`docs/reports/M0.md`。
 
 ### 8.3 slow 门禁的运行方式
 
@@ -250,7 +250,8 @@ bash run_tests.sh
 pytest tests/test_forces.py -m slow -k test_forces_vs_finite_difference -o addopts=""
 ```
 
-已记录的 slow 结果：力 vs FD gap 5.7e-7；h² ratio 4.0；Richardson gap 3.1e-12。
+已记录的 slow 结果：力 vs FD gap 5.66e-7 Ha/Bohr；h² ratio 4.0；ΔQ 伴随残差
+2.28e-11，vs 重跑 SCF FD 相对误差 1.65e-5。
 
 ### 8.4 这条记录本身的价值
 

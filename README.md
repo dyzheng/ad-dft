@@ -13,27 +13,25 @@
 |---|---|
 | L0 运行时（单位/dtype/精度账本） | ✅ |
 | L1 几何（Cell 可微、冻结壳层、FFT 盒规则） | ✅ 盒规则与 ABACUS 逐位一致 |
-| L2 原语（密度/Hartree/XC/V_NL/Ewald/占据） | ✅ 除 V_NL 的 Hermitian 诊断项 |
-| L3 求解器（DIIS-SCF、稠密 eigh、抛光到不动点） | ✅ 73 步收敛到 2e-13 |
-| L4 微分层（包络定理 + 不动点伴随） | ✅ 响应算子 corr 1.0000 |
-| L5 观测量（能量分解 / 力 / 应力 / ΔQ） | ✅ 力 vs Richardson 外推 3.1e-12 |
+| L2 原语（密度/Hartree/XC/V_NL/Ewald/占据） | ✅ UPF v1/v2、真实 m 通道、libxc LDA；NLCC 显式拒绝 |
+| L3 求解器（DIIS-SCF、稠密 eigh、抛光到不动点） | ✅ Γ + 联合壳层非 Γ；dense eigh 仍为 V0 限制 |
+| L4 微分层（包络定理 + 不动点伴随） | ✅ matrix-free 伴随；dense Jacobian 仅诊断 |
+| L5 观测量（能量分解 / 力 / 应力 / ΔQ） | ✅ 内部 FD/伴随门禁通过；ABACUS 外部对照未闭合 |
 
-**关键数字**：双能量形式差 0（机器精度）；`ΣF = 4.2e-8`；力 vs FD 在 h=1e-3 时
-5.7e-7 Ha/Bohr（∝h²），Richardson 外推后 3.1e-12。
-
-已修 5 个"能量对、梯度错"的 bug（详见 `docs/ARCHITECTURE.md §8`），
-剩 3 项诊断缺口（不阻塞物理，但必须在 K04/K08 清掉）。
+**关键数字**：I-15 在 `nfft=3375` 上 `corr=0.99999999999946`、`rel=1.14e-6`；
+`ΔQ` 伴随残差 `2.28e-11`；伴随成本 `2.22×` SCF、`nfft=3375` RSS 为
+`nfft=729` 的 `0.88×`；力 vs FD 在 h=1e-3 时 `5.66e-7 Ha/Bohr`（∝h²）。
+Si/Γ 归档 ABACUS 参考仍差 `31 meV/atom`，详见 `docs/reports/M0.md`（NO-GO）。
 
 ```bash
 export PYTHONPATH=src:tests
-python -m pytest tests/test_contracts.py    # 6 passed
-python -m pytest tests/test_primitives.py   # 7 passed, 2 xfailed（诊断项）
-python -m pytest tests/test_invariants.py   # 6 passed
-python -m pytest tests/test_forces.py       # 2 passed（slow 门禁见 VALIDATION §8.3）
+python -m pytest tests                        # 50 passed, 1 skipped, 0 xfail
+python -m pytest tests/test_forces.py -m slow # 3 passed
 ```
 
-`xfail(strict=True)` 是刻意的：一旦某个缺口被修好，测试会从 xfail 变成
-"unexpectedly passing" 从而**让 CI 失败**，迫使你更新记录。
+`tests/test_upf.py::test_against_abacus_element_info` 在未设置
+`ADDFT_RUN_ABACUS=1` 时 skip；当前沙箱的 MPI/PMIx 启动被资源限制阻塞，
+不能用 skip 代替 ABACUS 对照。
 
 ## 快速开始
 
@@ -60,6 +58,7 @@ terms = ad.energy_decomposition(s)    # 带 tag 的七项分解，可逐项开�
 | `spec/occupation.md` | 占据数、μ 的标量隐式、F=E−TS |
 | `spec/invariants.md` | 15 条不变量 + 噪声地板 + 差异预算 |
 | `docs/ARCHITECTURE.md` | 分层、可微边界、三条求导路径、已知缺口 |
+| `docs/reports/M0.md` | R3/M0 出口报告、误差预算、GO/NO-GO |
 | `docs/TASKS.md` | 22 个模块 + 5 个里程碑 + 任务卡模板 + 24 月节奏 |
 | `docs/VALIDATION.md` | 五级阶梯、五步协议、反作弊七条、封存集、CI 门禁 |
 | `docs/ABACUS_FACTS.md` | 从 ABACUS 源码逐条确认的事实（含文件行号） |
