@@ -20,8 +20,8 @@ import jax.numpy as jnp
 import pytest
 
 import addft as ad
-from addft.geometry.cell import with_frac
-from addft.observables.energy import energy_variational
+from addft.geometry.cell import strained, volume, with_frac
+from addft.observables.energy import energy_variational, mermin_free_energy
 from addft.runtime import units
 
 
@@ -96,6 +96,65 @@ def test_force_sum_rule(system):
     g = jax.grad(e_fn)(system.geo)
     f = -(g.frac @ jnp.linalg.inv(system.geo.lattice).T)
     assert float(jnp.max(jnp.abs(jnp.sum(f, axis=0)))) < 1e-6
+
+
+def test_stress_is_finite_and_symmetric(system):
+    """应变导数必须跨过 q=0（G=0）而不产生 NaN。
+
+    局域势与非局域投影都按 q=|G| 采样径向函数。直接写 ``sqrt(sum(G²))``
+    在 G=0 处对晶格求导是 0/0，应力会整张变成 NaN；力只对 positions
+    求导，所以这个错误不会被力测试抓到。
+    """
+    sigma = ad.stress(system)
+    assert bool(jnp.all(jnp.isfinite(sigma))), sigma
+    assert float(jnp.max(jnp.abs(sigma - sigma.T))) < 1e-10
+
+
+@pytest.mark.slow
+def test_stress_matches_scf_finite_difference(system):
+    """K13 应力门禁：AD 应力 vs 重跑 SCF 的中心差分。
+
+    符号按 ABACUS ``TOTAL-STRESS``（压缩为正）：σ = −(1/Ω)dF/dε。
+    等向应变只检验迹；h=2e-3 时中心差分的截断误差在本体系 <0.1 kbar。
+    关键是包络的“冻结 ψ”必须让 ρ(geo,ψ) 跟随几何，而不是冻结实空间
+    密度数组——后者在 Si/Γ 上实测偏数千 kbar。
+    """
+    geo = system.geo
+    omega = float(volume(geo.lattice))
+    h = 2e-3
+    energies = []
+    for sign in (-1.0, 1.0):
+        g = strained(geo, sign * h * jnp.eye(3))
+        st = ad.scf(ad.System(geo=g, static=system.static))
+        energies.append(float(energy_variational(g, system.static, st)))
+    fd = -(energies[1] - energies[0]) / (2 * h) / omega
+    fd = fd * units.HA_TO_KBAR / 3.0  # 等向应变的迹 → 每分量
+    ad_pc = float(jnp.trace(ad.stress(system)) / 3.0) * units.HA_TO_KBAR
+    assert abs(ad_pc - fd) < 1.0, f"AD={ad_pc:.3f} kbar  FD={fd:.3f} kbar"
+
+
+@pytest.mark.slow
+def test_stress_matches_free_energy_fd_with_partial_occupation():
+    """有限温度：力的泛函必须是 Mermin 自由能，占据才驻定。
+
+    nband=4 让第 3/4 带部分占据（σ=0.05 Ha）。若用内能 E 的应力，会漏掉
+    (ε−μ)∂f/∂ε，实测偏 ~39 kbar；对 F 做中心差分后 AD 应到 1e-3 kbar。
+    """
+    s = ad.setup(lattice=jnp.eye(3) * 6.0,
+                 frac=jnp.array([[0.0, 0.0, 0.0], [0.53, 0.47, 0.49]]),
+                 ecut=2.0, nband=4, density_factor=2.0, sigma=0.05)
+    geo = s.geo
+    omega = float(volume(geo.lattice))
+    h = 2e-3
+    energies = []
+    for sign in (-1.0, 1.0):
+        g = strained(geo, sign * h * jnp.eye(3))
+        st = ad.scf(ad.System(geo=g, static=s.static))
+        energies.append(float(mermin_free_energy(g, s.static, st)))
+    fd = -(energies[1] - energies[0]) / (2 * h) / omega
+    fd = fd * units.HA_TO_KBAR / 3.0
+    ad_pc = float(jnp.trace(ad.stress(s)) / 3.0) * units.HA_TO_KBAR
+    assert abs(ad_pc - fd) < 0.5, f"AD={ad_pc:.3f} kbar  FD={fd:.3f} kbar"
 
 
 @pytest.mark.slow

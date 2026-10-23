@@ -16,7 +16,7 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 
-from ..geometry.basis import Basis, g2, gvectors
+from ..geometry.basis import Basis, g2, gvectors, psi_to_real
 from ..geometry.cell import Cell, volume
 from ..physics import hartree, xc
 from ..physics.density import density_from_psi
@@ -81,18 +81,105 @@ def effective_potential(geo: Cell, static: Static, rho_r, with_xc=True):
 
 # ------------------------------------------------------------------ 物理映射
 
+def _hamiltonian_from_density(geo: Cell, static: Static, rho_r):
+    v_r, _ = effective_potential(geo, static, rho_r)
+    return hamiltonian(geo, static, v_r)
+
+
+def _hamiltonian_and_tangent(geo: Cell, static: Static, rho_r, dgeo, drho):
+    """H[n] 与其方向导数，避开 libxc custom_vjp 的 forward-mode 限制。
+
+    H 对密度的依赖只经 v_H 与 v_xc。``v_xc`` 的密度导数用 LDA 对角核，
+    ``v_H`` 与几何项走平滑 JVP；``hamiltonian`` 本身在固定 ``v_r`` 下对
+    geometry 求导，再补上 ``v_r`` 的密度/局域势变化。这样既不穿过 eigh，
+    也不要求 ctypes XC 支持 forward-mode。
+    """
+    v_r, _ = effective_potential(geo, static, rho_r)
+    H = hamiltonian(geo, static, v_r)
+    _, dH_geo = jax.jvp(
+        lambda g, v: hamiltonian(g, static, v),
+        (geo, v_r), (dgeo, jnp.zeros_like(v_r)))
+    _, dv_loc = jax.jvp(
+        lambda g: local_potential_r(static.psp, static.spec_idx,
+                                    static.basis, g),
+        (geo,), (dgeo,))
+    _, dv_h = jax.jvp(
+        lambda lat, r: hartree.hartree_potential_r(static.basis, lat, r),
+        (geo.lattice, rho_r), (dgeo.lattice, drho))
+    dv_xc = xc.xc_kernel_r(rho_r) * drho
+    dH = dH_geo + vmat_from_real(static.basis, dv_loc + dv_h + dv_xc)
+    return H, dH
+
+
+def _density_tangent_from_dh(geo: Cell, static: Static, H, dH, dlat, tol=1e-6):
+    """固定输入密度时，由一阶微扰 δH 给出的 δF。
+
+    本征矢响应按 ``δC_n = Σ_m C_m M_mn/(ε_n − ε_m)`` 计算；
+    ``|ε_n − ε_m| < tol`` 的子空间内旋转不改变总密度，因此置零。
+    这样不需要对 ``eigh`` 反向求导，Γ 点简并不会产生 1/0。
+    """
+    basis = static.basis
+    lat = geo.lattice
+    nband = int(static.nband)
+    deg = static.spin_degeneracy
+    eps, C = jnp.linalg.eigh(H)  # (nk,nG), (nk,nG,nG)；列为本征矢
+    vec = jnp.swapaxes(C[..., :, :nband], -1, -2)
+    eig = eps[..., :nband]
+    occ, _ = occupations(eig, static.kweights, static.nelec,
+                         static.sigma, deg)
+
+    M = jnp.einsum("kmi,kmn,knj->kij", jnp.conj(C), dH, C)
+    M = 0.5 * (M + jnp.conj(M).transpose(0, 2, 1))
+    deps = jnp.real(jnp.diagonal(M, axis1=-2, axis2=-1))[..., :nband]
+    if static.sigma > 1e-6:
+        fprime = occ * (1.0 - occ) / static.sigma
+        denom = jnp.sum(static.kweights[:, None] * fprime, axis=-1) + 1e-30
+        dmu = jnp.sum(static.kweights[:, None] * fprime * deps, axis=-1) / denom
+        docc = fprime * (deps - dmu[:, None])
+    else:
+        docc = jnp.zeros_like(occ)
+
+    d = eps[:, None, :] - eps[:, :, None]  # d[m,n] = ε_n − ε_m
+    off = jnp.abs(d) > tol
+    wgt = jnp.where(off, 1.0 / jnp.where(off, d, 1.0), 0.0)
+    coef = M * wgt
+    dC = jnp.einsum("kmi,kin->kmn", C, coef[..., :nband])
+    dvec = jnp.swapaxes(dC, -1, -2)
+
+    psi_r, dpsi_r = jax.jvp(
+        lambda l, c: psi_to_real(basis, l, c),
+        (lat, vec), (dlat, dvec))
+    dmod2 = 2.0 * jnp.real(jnp.conj(psi_r) * dpsi_r)
+    w = static.kweights[:, None, None] * deg
+    return jnp.sum(w * (occ[..., None] * dmod2
+                        + docc[..., None] * jnp.abs(psi_r) ** 2), axis=(0, 1))
+
+
+@jax.custom_jvp
 def scf_map(geo: Cell, static: Static, rho_r):
     """一次物理映射：n → H[n] → 对角化 → 占据 → n'。
 
     这是反向传播唯一允许看到的映射：混合器不在这里。
     """
-    v_r, _ = effective_potential(geo, static, rho_r)
-    H = hamiltonian(geo, static, v_r)
+    H = _hamiltonian_from_density(geo, static, rho_r)
     eig, vec = eigh_lowest(H, static.nband)
     occ, mu = occupations(eig, static.kweights, static.nelec, static.sigma,
                           static.spin_degeneracy)
     return density_from_psi(static.basis, geo.lattice, vec, occ,
                             static.kweights, static.spin_degeneracy)
+
+
+@scf_map.defjvp
+def _scf_map_jvp(primals, tangents):
+    geo, static, rho_r = primals
+    dgeo, _, drho = tangents
+    H, dH = _hamiltonian_and_tangent(geo, static, rho_r, dgeo, drho)
+    eig, vec = eigh_lowest(H, static.nband)
+    occ, _ = occupations(eig, static.kweights, static.nelec, static.sigma,
+                         static.spin_degeneracy)
+    rho_out = density_from_psi(static.basis, geo.lattice, vec, occ,
+                               static.kweights, static.spin_degeneracy)
+    return rho_out, _density_tangent_from_dh(geo, static, H, dH, dgeo.lattice)
 
 
 # ------------------------------------------------------------------ 混合器

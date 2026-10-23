@@ -91,5 +91,9 @@ def forces_from_grad(geo: Cell, grad_cell) -> jnp.ndarray:
 
 
 def stress_from_grad(omega, grad_eps) -> jnp.ndarray:
-    """σ = (1/Ω) dE/dε（ε 通过与 strained() 相同的构造产生）。"""
-    return grad_eps / omega
+    """σ = −(1/Ω) dE/dε（ABACUS TOTAL-STRESS 约定：压缩为正）。
+
+    ``grad_eps`` 由 ``strained()`` 的同一构造产生，即 dE/dε_αβ。
+    内部导数与打印应力的符号相反；适配层不修正这一点，统一在这里定义。
+    """
+    return -grad_eps / omega

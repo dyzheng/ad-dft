@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
-from ..geometry.basis import Basis, g2, gvectors
+from ..geometry.basis import Basis, g2, gvectors, safe_norm
 from ..geometry.cell import Cell, positions, volume
 from ..geometry.psp import Pseudo, beta_q, lm_table
 from .ylm import ylm_real
@@ -51,7 +51,7 @@ def projectors(psp: Pseudo, spec_idx, basis: Basis, cell: Cell, kpts):
     out = []
     for ik in range(int(kpts.shape[0])):
         gk = gvectors(basis, cell.lattice, kpts[ik])  # (nG, 3)
-        q = jnp.sqrt(jnp.sum(gk * gk, axis=-1))  # (nG,)
+        q = safe_norm(gk)  # (nG,)，G=0 处梯度必须有限
         ylm = ylm_real(int(psp.lmax[int(spec_idx[0])]), gk)  # (nG,(lmax+1)^2)
         phase = jnp.exp(-1j * (gk @ r.T))  # (nG, nat)
         rows = []

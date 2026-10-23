@@ -161,6 +161,18 @@ def g2_density(basis: Basis, lattice):
     return jnp.sum(g * g, axis=-1)
 
 
+def safe_norm(v, eps: float = 1e-30):
+    """逐行欧氏范数，在零模处对几何保持可导。
+
+    直接 ``sqrt(sum(v²))`` 在 ``v=0`` 处的导数是 0/0；局域势与非局域
+    投影都在 G=0 处采样，应力（对晶格求导）会因此变成 NaN。先把零模的
+    sqrt 输入替换为 1、再屏蔽输出，使该点的梯度严格为零。
+    """
+    r2 = jnp.sum(v * v, axis=-1)
+    positive = r2 > eps
+    return jnp.where(positive, jnp.sqrt(jnp.where(positive, r2, 1.0)), 0.0)
+
+
 def shell_margin(basis: Basis, lattice) -> float:
     """冻结壳层的安全裕度：最外层 |G|^2 与截断面的相对距离。
 

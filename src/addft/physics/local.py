@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
-from ..geometry.basis import (Basis, g2_density, gvectors_density,
-                              real_from_density_g)
+from ..geometry.basis import (Basis, gvectors_density, real_from_density_g,
+                              safe_norm)
 from ..geometry.cell import Cell, positions, volume
 from ..geometry.psp import Pseudo, vloc_q
 
@@ -26,7 +26,7 @@ def local_potential_g(psp: Pseudo, spec_idx, basis: Basis, cell: Cell):
     V_loc 的高 G 分量，从而截断局域哈密顿量矩阵元。
     """
     g = gvectors_density(basis, cell.lattice)
-    q = jnp.sqrt(g2_density(basis, cell.lattice))
+    q = safe_norm(g)
     amp = vloc_q(psp, spec_idx, q)  # (nat, nG)
     r = positions(cell)  # (nat, 3)
     phase = jnp.exp(-1j * (g @ r.T))  # (nG, nat)

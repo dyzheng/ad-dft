@@ -151,3 +151,19 @@ def energy_variational(geo: Cell, static: Static, state: SCFState):
     charges = static.psp.zval[static.spec_idx]
     e_ii = ewald_energy(geo, charges, eta=static.eta_ewald)
     return e_band - e_h + e_xc - e_dc + e_ii
+
+
+def mermin_free_energy(geo: Cell, static: Static, state: SCFState):
+    """F = E_var − σ·g_s·S̃（Mermin 自由能；σ=0 时退化为总能）。
+
+    力的泛函必须是 F 而不是 E：有限温度下 ∂E/∂f = ε−μ ≠ 0，占据会随
+    几何变化；只有 F 对 f 驻定（∂F/∂f = ε−μ−σ·dS/df = 0），包络定理
+    才能把占据响应合法地丢掉。S̃ 只依赖 f，因此冻结 f 时熵项对几何
+    没有显式导数——这也是 `make_energy` 的 envelope 反向仍只需一次
+    ∂E/∂geo 的原因。
+    """
+    from ..physics.occupation import entropy
+
+    e = energy_variational(geo, static, state)
+    s = entropy(state.eig, state.occ, static.kweights, static.sigma)
+    return e - static.sigma * static.spin_degeneracy * s
