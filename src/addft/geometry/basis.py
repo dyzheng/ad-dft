@@ -7,6 +7,10 @@
 2. **物理 G 矢量**——`gvectors(basis, lattice)` 每次都从 lattice 重算，
    于是 G → (1+ε)^{-T}G、Ω → det(I+ε)Ω 两条链自动进入 AD 图，Pulay 项不会漏。
 
+波函数与局域势使用两套冻结壳层：ψ 在 `miller`（`ecutwfc`）上展开；局域势
+`V_loc` 以及由它构造的矩阵元必须覆盖两个波函数 G 的差，因此改用
+`miller_rho`（`ecutrho = density_factor * ecutwfc`，ABACUS 默认 4×）。
+
 FFT 盒规则与 ABACUS `source_basis/module_pw/pw_init.cpp:92-137` 对齐：
 先取 `ibox = 2*max|m_i| + 1`（奇数），再自增到只含 2、3、5 因子的最小整数。
 ABACUS 源码里 7 的分支被注释掉，因此这里同样不允许 7。
@@ -27,10 +31,19 @@ class Basis(NamedTuple):
     miller: jnp.ndarray  # (nG, 3) int32 —— 冻结的整数指标
     ecut: float  # Ha, 动能判据 |k+G|^2 / 2 <= ecut
     fft_shape: tuple  # 密度/波函数共用的实空间盒
+    miller_rho: jnp.ndarray | None = None  # 局域势/密度的冻结壳层
 
     @property
     def nG(self) -> int:
         return int(self.miller.shape[0])
+
+    @property
+    def density_miller(self) -> jnp.ndarray:
+        return self.miller if self.miller_rho is None else self.miller_rho
+
+    @property
+    def nG_rho(self) -> int:
+        return int(self.density_miller.shape[0])
 
     @property
     def nfft(self) -> int:
@@ -115,10 +128,13 @@ def fft_shape(lattice, ecut: float, density_factor: float = 4.0) -> tuple:
 
 def make_basis(lattice, ecut: float, density_factor: float = 4.0,
                kpts=None) -> Basis:
+    ecut = float(ecut)
+    density_factor = float(density_factor)
     return Basis(
         miller=build_miller(lattice, ecut, kpts=kpts),
-        ecut=float(ecut),
+        ecut=ecut,
         fft_shape=fft_shape(lattice, ecut, density_factor),
+        miller_rho=build_miller(lattice, ecut * density_factor),
     )
 
 
@@ -132,6 +148,16 @@ def gvectors(basis: Basis, lattice, kpoint=None):
 
 def g2(basis: Basis, lattice, kpoint=None):
     g = gvectors(basis, lattice, kpoint)
+    return jnp.sum(g * g, axis=-1)
+
+
+def gvectors_density(basis: Basis, lattice):
+    """(nG_rho, 3) 局域势/密度壳层上的笛卡尔 G 矢量。"""
+    return basis.density_miller.astype(lattice.dtype) @ reciprocal(lattice)
+
+
+def g2_density(basis: Basis, lattice):
+    g = gvectors_density(basis, lattice)
     return jnp.sum(g * g, axis=-1)
 
 
@@ -149,28 +175,34 @@ def shell_margin(basis: Basis, lattice) -> float:
 # G 空间 <-> 实空间（1/√Ω 约定，见 spec/units.md）
 # --------------------------------------------------------------------------
 
-def _flat_index(basis: Basis) -> jnp.ndarray:
-    n1, n2, n3 = basis.fft_shape
-    m = basis.miller
+def _flat_index(fft_shape, miller) -> jnp.ndarray:
+    n1, n2, n3 = fft_shape
+    m = miller
     i1 = jnp.mod(m[:, 0], n1)
     i2 = jnp.mod(m[:, 1], n2)
     i3 = jnp.mod(m[:, 2], n3)
     return (i1 * n2 + i2) * n3 + i3
 
 
-def coeffs_to_grid(basis: Basis, c: jnp.ndarray) -> jnp.ndarray:
+def _coeffs_to_grid(basis: Basis, c: jnp.ndarray, miller) -> jnp.ndarray:
     """(..., nG) -> (..., n1, n2, n3) 的零填充谱数组。"""
     lead = c.shape[:-1]
     flat = jnp.zeros(lead + (basis.nfft,), dtype=c.dtype)
-    flat = flat.at[..., _flat_index(basis)].set(c, unique_indices=True)
+    flat = flat.at[..., _flat_index(basis.fft_shape, miller)].set(
+        c, unique_indices=True)
     return flat.reshape(lead + tuple(basis.fft_shape))
+
+
+def coeffs_to_grid(basis: Basis, c: jnp.ndarray) -> jnp.ndarray:
+    """波函数壳层系数 → 实空间 FFT 盒。"""
+    return _coeffs_to_grid(basis, c, basis.miller)
 
 
 def grid_to_coeffs(basis: Basis, arr: jnp.ndarray) -> jnp.ndarray:
     """(..., n1, n2, n3) -> (..., nG)。"""
     lead = arr.shape[:-3]
     flat = arr.reshape(lead + (basis.nfft,))
-    return jnp.take(flat, _flat_index(basis), axis=-1)
+    return jnp.take(flat, _flat_index(basis.fft_shape, basis.miller), axis=-1)
 
 
 def psi_to_real(basis: Basis, lattice, c: jnp.ndarray) -> jnp.ndarray:
@@ -199,7 +231,16 @@ def density_g(basis: Basis, lattice, rho_r: jnp.ndarray) -> jnp.ndarray:
     return grid_to_coeffs(basis, spec)
 
 
+def _real_from_g(basis: Basis, vg: jnp.ndarray, miller) -> jnp.ndarray:
+    grid = _coeffs_to_grid(basis, vg, miller)
+    return (basis.nfft * jnp.fft.ifftn(grid)).real.reshape(basis.nfft)
+
+
 def real_from_g(basis: Basis, lattice, vg: jnp.ndarray) -> jnp.ndarray:
     """v(r) = Σ_G v_G e^{iG·r} = N · ifftn(v_grid)；输出扁平 (nfft,)。"""
-    grid = coeffs_to_grid(basis, vg)
-    return (basis.nfft * jnp.fft.ifftn(grid)).real.reshape(basis.nfft)
+    return _real_from_g(basis, vg, basis.miller)
+
+
+def real_from_density_g(basis: Basis, lattice, vg: jnp.ndarray) -> jnp.ndarray:
+    """密度/局域势壳层系数 → 实空间；输入长度必须是 ``basis.nG_rho``。"""
+    return _real_from_g(basis, vg, basis.density_miller)

@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 import addft as ad
 from addft.geometry.basis import density_g, gvectors, real_from_g, psi_to_real
 from addft.geometry.cell import volume
+from addft.geometry.psp import vloc_q
 from addft.physics import hartree, nonlocal_op, xc
 from addft.physics.ewald import ewald_energy
+from addft.physics.local import local_potential_r
 from addft.solver.scf import vmat_from_real
 from conftest import LATTICE, make_system
 
@@ -164,6 +167,40 @@ def test_matrix_vs_grid_representation(system):
     mat = jnp.real(jnp.vdot(psi, vmat_from_real(basis, v) @ psi))
     integ = (om / n) * jnp.sum(v * jnp.abs(psi_r) ** 2)
     assert abs(float(mat - integ)) < 1e-10
+
+
+def test_local_potential_keeps_density_cutoff_modes(system):
+    """V_loc 必须包含波函数壳层之外的 G，否则局域矩阵元被截断。
+
+    取两个边界波函数 G=(1,1,1) 与 (-1,-1,-1)，其差 Q=(2,2,2) 在
+    ``ecutrho=4*ecutwfc`` 内、但在波函数壳层之外。局域势矩阵元必须等于
+    直接用密度壳层上的 ``v_loc(Q)`` 算出的值；旧实现只把 v_loc 采样到
+    波函数壳层，因此这一项会变成零。
+    """
+    basis = system.static.basis
+    cell = system.geo
+    psp = system.static.psp
+    si = system.static.spec_idx
+
+    miller = np.asarray(basis.miller)
+    i = int(np.flatnonzero(np.all(miller == np.array([1, 1, 1]), axis=1))[0])
+    j = int(np.flatnonzero(np.all(miller == np.array([-1, -1, -1]), axis=1))[0])
+    q_miller = np.array([2, 2, 2])
+    rho_miller = np.asarray(basis.miller_rho)
+    assert np.any(np.all(rho_miller == q_miller, axis=1)), \
+        "密度壳层没有覆盖波函数 G 的差矢量"
+    assert not np.any(np.all(miller == q_miller, axis=1))
+
+    bmat = 2.0 * np.pi * np.linalg.inv(np.asarray(cell.lattice)).T
+    q = float(np.linalg.norm(q_miller @ bmat))
+    amp = vloc_q(psp, si, jnp.asarray([q]))[0, 0]
+    r = np.asarray(cell.frac @ cell.lattice)
+    phase = np.exp(-1j * (r @ (q_miller @ bmat)))
+    expected = amp * np.sum(phase) / float(volume(cell.lattice))
+
+    v_r = local_potential_r(psp, si, basis, cell)
+    vm = vmat_from_real(basis, v_r)
+    assert abs(complex(vm[i, j] - expected)) < 1e-10
 
 
 def test_nonlocal_operator_is_hermitian(system):

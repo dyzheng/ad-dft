@@ -62,7 +62,7 @@
 |---|---|---|---|
 | 1 | **内部单位是 Ry–Bohr**：`e2=2`，动能算符无 ½ | 方案按 Ha 写公式 | 单位桥必须在 adapter 层，见 `spec/units.md` |
 | 2 | FFT 盒：奇数 → **只含 2,3,5**（7 被注释掉） | 方案说"2,3,5 平滑数"，对 | 直接复用规则 |
-| 3 | 密度网格 `ecutrho = 4×ecutwfc`，wfc 复用同一盒 | 未提 | 默认 `density_factor=4` |
+| 3 | 密度网格 `ecutrho = 4×ecutwfc`，wfc 复用同一盒 | 未提 | 默认 `density_factor=4`；`Basis` 另留 `miller_rho` 供 `V_loc` 使用 |
 | 4 | **NLCC 被读取但从不参与 XC** | 方案说 NLCC 会造成 1–5 meV 差异 | 必须显式选择：实现或拒绝，不许静默 |
 | 5 | β(\|k+G\|) **预表化**（`dq=0.01`，4 点插值） | 方案警告过，但没确认 ABACUS 真这么做 | 本项目**不做**预表化（这是 AD 的立足点） |
 | 6 | `D_ij` 0-based，`l²+m` 展平；`ijtoh` 残留 1-based | 未提 | UPF 解析必须有逐元素测试 |
@@ -143,6 +143,8 @@ class Static(NamedTuple):        # ← 一律不进微分图
    展平处报错。
 
 `Basis.miller` 是 `int32` 数组：它在参考构型上一次生成，之后**不随几何变化**。
+局域势使用同一原则生成的 `Basis.miller_rho`（`ecutrho=4×ecutwfc`）：波函数
+矩阵元 `V_loc(G−G')` 需要覆盖两个波函数 G 的差，不能截到波函数壳层。
 物理 G 矢量每次都从 `lattice` 重算，因此 Pulay 项自动进入图。
 
 ---

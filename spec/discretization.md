@@ -9,6 +9,19 @@ Basis.miller : (nG, 3) int32      # 冻结；不参与微分
 gvectors(basis, lattice, k)       # 每次从 lattice 重算 → 可微
 ```
 
+局域势不能与波函数共用同一壳层：`⟨G|V_loc|G'⟩` 使用 `V_loc(G−G')`，
+而两个波函数 G 的差可以达到 `2|G|_max`。因此 `Basis` 另存
+
+```python
+Basis.miller_rho : (nG_rho, 3) int32  # |G|²/2 ≤ density_factor * ecut
+gvectors_density(basis, lattice)      # 局域势/密度壳层的笛卡尔 G
+```
+
+默认 `density_factor=4`，对应 ABACUS 的 `ecutrho = 4 × ecutwfc`。
+`V_loc(G)` 在 `miller_rho` 上采样后投到共用 FFT 盒；哈密顿量仍只在
+`miller` 上取矩阵元。把 `V_loc` 截到波函数壳层会静默丢掉高 G 矩阵元；
+Si/Γ 实测可使总能偏差约 31 meV/atom、本征值偏差 5–12 meV。
+
 判据 `|k+G|²/2 ≤ ecut`（原子单位）。应变下 `G → (1+ε)^{-T}G`、`Ω → det(I+ε)Ω`
 自动进入 AD 图，三项 Pulay 一个不少。
 
