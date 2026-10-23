@@ -233,8 +233,9 @@ perf-gate 只跑**代理指标**（几分钟可测），完整 benchmark 每周�
 
 18 项内部判据全部通过。此前三项“诊断项”已由 R3-01 的 `dion_full` 布局与测试
 辅助函数修正，当前实测：矩阵/网格差 2.08e-17、V_NL 转置差 4.47e-18、
-手工 ∫|ψ|² 差 3.33e-16。外部 ABACUS E/F/σ 对照仍是 M0 的 NO-GO 项：
-沙箱无法启动 MPI/PMIx（F4），归档 Si 能量仍差 31 meV/atom（F5），详见
+手工 ∫|ψ|² 差 3.33e-16。外部 ABACUS E/F/σ 对照已由固定二进制
+`c17cbac9b` 在同一 INPUT 下闭合：Si/Γ 能量差 `0.277 meV/atom`、
+Si 畸变力 `0.593 meV/Å`、Si/Γ 应力 `0.029 kbar`，详见
 `docs/reports/M0.md`。
 
 ### 8.3 slow 门禁的运行方式

@@ -33,9 +33,9 @@
 **R3 收口后的实测**：I-15 在 `nfft=3375` 上达到
 `corr=0.99999999999946`、`rel=1.14e-6`；`Aᵀλ=g` 残差 `2.28e-11`；
 伴随成本 `2.22×` 一次 SCF，`nfft=3375` 峰值 RSS 为 `nfft=729` 的 `0.88×`。
-阻塞项已经从“响应算子错误”变成“ABACUS 外部对照未闭合”：归档 Si/Γ
-参考仍有 `31 meV/atom` 残差，且本沙箱无法启动 MPI/PMIx。详见
-`docs/reports/M0.md`。
+外部对照已闭合：固定二进制 ABACUS `c17cbac9b` 与同一 INPUT 下，
+Si/Γ 总能差 `0.277 meV/atom`、Si 畸变力 `0.593 meV/Å`、
+Si/Γ 应力 `0.029 kbar`。详见 `docs/reports/M0.md`。
 
 ---
 
@@ -301,8 +301,8 @@ $\sigma = -(1/\Omega)\,dF/d\varepsilon$（压缩为正）；内部导数
 | 力 vs FD（h=1e-3） | gap 5.66e-7 Ha/Bohr ≈ 2.9e-5 eV/Å |
 | FD 残差 h 标度 | 8e-3→1e-3 时 3.66e-5→5.73e-7（∝h²） |
 
-**结论：能量层与梯度层在原型规模内可用。** 外部 ABACUS E/F/σ 对照仍是
-M0 的 NO-GO 项；详见 `docs/reports/M0.md`。
+**结论：能量层与梯度层在原型规模内可用，外部 ABACUS E/F/σ 对照已通过。**
+详见 `docs/reports/M0.md`。
 
 ## 9. 与 DQC 的关系：继承什么、拒绝什么
 
