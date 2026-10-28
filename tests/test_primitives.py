@@ -238,3 +238,10 @@ def test_dion_packing_is_block_diagonal():
     assert float(jnp.max(jnp.abs(d - jnp.conj(d).T))) < 1e-14
     assert float(jnp.max(jnp.abs(d[nh:, :nh]))) < 1e-14
     assert float(jnp.max(jnp.abs(d[:nh, nh:]))) < 1e-14
+
+
+def test_ewald_is_jittable(system):
+    """Ewald must be usable inside jax.jit (no boolean-index on tracers)."""
+    z = system.static.psp.zval[system.static.spec_idx]
+    f = jax.jit(lambda cell, q: ewald_energy(cell, q, eta=system.static.eta_ewald))
+    assert abs(float(f(system.geo, z)) - float(ewald_energy(system.geo, z))) < 1e-12

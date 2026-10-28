@@ -55,6 +55,23 @@ sigma = ad.stress(s)                  # σ = −(1/Ω) dF/dε（ABACUS 约定）
 terms = ad.energy_decomposition(s)    # 带 tag 的七项分解，可逐项开关
 ```
 
+## 原生 GPU 后端（实验）
+
+原生 CUDA 后端已包含 **LDA XC 融合 kernel、cuSOLVER eigensolver、
+G-shell scatter/gather**；没有构建时自动回退到 JAX/libxc 路径：
+
+```bash
+NVCC=/root/miniconda/bin/nvcc ./native/build.sh   # CUDA >= 12
+export PYTHONPATH=src:tests
+python -m pytest tests/test_native_xc.py -q
+```
+
+`ADDFT_NATIVE_XC=0` 可显式关闭原生路径。当前实测（RTX 3070 Ti / WSL2）：
+`bench/adjoint.py 3375` 的 SCF 从 `19.35 s` 降到 `0.34 s`，SCF+grad 从
+`41.75 s` 降到 `3.19 s`；`nfft=729` 的 SCF 从 `32.94 s` 降到 `0.29 s`。
+设备端 `lax.while_loop` SCF、原生 cuSOLVER eigensolver 与原生 XC 融合
+kernel 均已接入；详见 `native/README.md` 与 `docs/reports/M1.md`。
+
 ## 文档地图
 
 | 文件 | 内容 |
@@ -66,6 +83,11 @@ terms = ad.energy_decomposition(s)    # 带 tag 的七项分解，可逐项开�
 | `spec/invariants.md` | 15 条不变量 + 噪声地板 + 差异预算 |
 | `docs/ARCHITECTURE.md` | 分层、可微边界、三条求导路径、已知缺口 |
 | `docs/reports/M0.md` | R3/M0 出口报告、误差预算、GO/NO-GO |
+| `docs/reports/M1.md` | 原生 GPU 后端、设备端 SCF、Broyden、native pack |
+| `docs/reports/ABACUS_COMPARISON.md` | 20/40/100 Ry 与 ABACUS 的精度/性能/分项时间 |
+| `docs/DEV_PLAN_10X.md` | 10× 性能路线、方案优先级、实验台账、决策门禁 |
+| `docs/PHASE_SUMMARY.md` | 阶段总结：各模块设计考虑、尝试方案、实测效果、失败模式与下一步 |
+| `docs/experiments/` | E0–E6 逐项实验记录（基线、Hψ、eigensolver、direct min、FP32、DM 纯化） |
 | `docs/TASKS.md` | 22 个模块 + 5 个里程碑 + 任务卡模板 + 24 月节奏 |
 | `docs/VALIDATION.md` | 五级阶梯、五步协议、反作弊七条、封存集、CI 门禁 |
 | `docs/ABACUS_FACTS.md` | 从 ABACUS 源码逐条确认的事实（含文件行号） |

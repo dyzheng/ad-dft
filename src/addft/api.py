@@ -122,8 +122,9 @@ def make_energy(static: Static, mode: str = "envelope",
 def energy_and_forces(system: System, **scf_kwargs):
     """F 与力（eV/Å 由调用方换算；内部 Hartree/Bohr）。力来自变分包络，不是有限差分。"""
     e_fn = make_energy(system.static, **scf_kwargs)
-    e = e_fn(system.geo)
-    g = jax.grad(e_fn)(system.geo)
+    # value_and_grad runs the custom_vjp forward once; calling e_fn then
+    # jax.grad(e_fn) would solve the SCF twice.
+    e, g = jax.value_and_grad(e_fn)(system.geo)
     return e, forces_from_grad(system.geo, g)
 
 

@@ -26,6 +26,12 @@ import numpy as np
 
 from ..geometry.cell import reciprocal, volume
 
+try:
+    from ..kernels.pack import load_pack, native_scatter, native_gather
+    _NATIVE_PACK = load_pack()
+except Exception:  # pragma: no cover
+    _NATIVE_PACK = None
+
 
 class Basis(NamedTuple):
     miller: jnp.ndarray  # (nG, 3) int32 —— 冻结的整数指标
@@ -199,9 +205,12 @@ def _flat_index(fft_shape, miller) -> jnp.ndarray:
 def _coeffs_to_grid(basis: Basis, c: jnp.ndarray, miller) -> jnp.ndarray:
     """(..., nG) -> (..., n1, n2, n3) 的零填充谱数组。"""
     lead = c.shape[:-1]
+    idx = _flat_index(basis.fft_shape, miller)
+    if _NATIVE_PACK is not None and c.dtype == jnp.complex128:
+        flat = native_scatter(c, idx, basis.nfft)
+        return flat.reshape(lead + tuple(basis.fft_shape))
     flat = jnp.zeros(lead + (basis.nfft,), dtype=c.dtype)
-    flat = flat.at[..., _flat_index(basis.fft_shape, miller)].set(
-        c, unique_indices=True)
+    flat = flat.at[..., idx].set(c, unique_indices=True)
     return flat.reshape(lead + tuple(basis.fft_shape))
 
 
@@ -214,7 +223,11 @@ def grid_to_coeffs(basis: Basis, arr: jnp.ndarray) -> jnp.ndarray:
     """(..., n1, n2, n3) -> (..., nG)。"""
     lead = arr.shape[:-3]
     flat = arr.reshape(lead + (basis.nfft,))
-    return jnp.take(flat, _flat_index(basis.fft_shape, basis.miller), axis=-1)
+    idx = _flat_index(basis.fft_shape, basis.miller)
+    if _NATIVE_PACK is not None and flat.dtype == jnp.complex128:
+        out = native_gather(flat, idx, basis.nG)
+        return out.reshape(lead + (basis.nG,))
+    return jnp.take(flat, idx, axis=-1)
 
 
 def psi_to_real(basis: Basis, lattice, c: jnp.ndarray) -> jnp.ndarray:

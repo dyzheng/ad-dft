@@ -28,6 +28,14 @@ try:
 except Exception:  # pragma: no cover - 取决于系统是否装了 libxc
     _HAVE_LIBXC = False
 
+# 第一个原生 CUDA 融合 kernel（E_xc 与 v_xc 同一 pass）。没有 .so 或没有
+# GPU 时返回 None，自动回退到 libxc/JAX 路径。
+try:
+    from ..kernels.xc_lda import load_xc_lda
+    _NATIVE_XC = load_xc_lda()
+except Exception:  # pragma: no cover - 取决于本地是否构建了 native/
+    _NATIVE_XC = None
+
 USE_LIBXC = os.environ.get("ADDFT_XC", "libxc") != "analytic"
 if USE_LIBXC and not _HAVE_LIBXC:
     raise ImportError("找不到 libxc；设置 ADDFT_XC=analytic 使用解析 PZ81 fallback")
@@ -153,6 +161,8 @@ def xc_potential_r(xc_energy_fn, basis: Basis, lattice, rho_r):
     对**整个密度场**求导，因此 GGA 的 −∇· 项会自动出现（方案 §4.3 的断言）。
     """
     if USE_LIBXC and xc_energy_fn is xc_energy_lda:
+        if _NATIVE_XC is not None:
+            return _native_vxc(rho_r)
         # 直接取 libxc 的 vrho；对 rho 的导数由 custom_vjp -> fxc 给出，
         # 避免对 ctypes callback 做二阶 AD。
         return (libxc_lda_vrho(rho_r, XC_LDA_X) +
@@ -179,3 +189,24 @@ def xc_kernel_r(n):
         return jax.vmap(xc_kernel_point)(n)
     return (libxc_lda_kernel(n, XC_LDA_X) +
             libxc_lda_kernel(n, XC_LDA_C_PZ))
+
+
+# ---------------------------------------------------------------- native VJP
+if _NATIVE_XC is not None:
+    @jax.custom_vjp
+    def _native_vxc(rho):
+        """原生融合 kernel 的 v_xc；能量项在同一 pass 算完但此处丢弃。"""
+        return _NATIVE_XC(rho)[0]
+
+    def _native_vxc_fwd(rho):
+        vxc, _ = _NATIVE_XC(rho)
+        return vxc, (rho,)
+
+    def _native_vxc_bwd(res, g):
+        rho, = res
+        # v = d(n eps)/dn  ⇒  δv/δn = d²(n eps)/dn² = K_xc
+        return (xc_kernel_r(rho) * g,)
+
+    _native_vxc.defvjp(_native_vxc_fwd, _native_vxc_bwd)
+else:  # pragma: no cover
+    _native_vxc = None

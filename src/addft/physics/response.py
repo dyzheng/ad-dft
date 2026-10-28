@@ -23,6 +23,7 @@ import jax.numpy as jnp
 
 from ..geometry.basis import density_g, g2, psi_to_real, real_from_g
 from ..geometry.cell import Cell
+from ..kernels import pack as _pack
 from ..physics import xc
 from ..system import SCFState, Static
 
@@ -49,12 +50,25 @@ def make_response(geo: Cell, static: Static, state: SCFState, tol: float = 1e-6)
     kxc = xc.xc_kernel_r(state.rho_r)  # (nfft,)
     eig, vec = _full_eigensystem(geo, static, state)
     nband = static.nband
+    # Native cuSOLVER and JAX/LAPACK may return different phases (or a
+    # different basis inside a degenerate subspace) for the occupied states.
+    # The response formula couples ``dc`` with the *state* wavefunction, so
+    # the full eigensystem must use the same occupied basis as ``state.psi``.
+    # Rotate the lowest nband columns by the unitary polar factor of
+    # <C_occ|psi>; eigenvalues and the occupied subspace are unchanged.
+    for ik in range(int(state.psi.shape[0])):
+        C = vec[ik]
+        C_occ = C[:, :nband]
+        S = jnp.conj(C_occ).T @ state.psi[ik].T
+        U, _, Vh = jnp.linalg.svd(S)
+        C_occ = C_occ @ (U @ Vh)
+        vec = vec.at[ik, :, :nband].set(C_occ)
     sigma = static.sigma
     deg = static.spin_degeneracy
     w = static.kweights
     mu = state.mu
 
-    def apply(dn_r):
+    def _apply(dn_r):
         # 1) δV_eff = K_H δn + K_xc δn
         ng = density_g(basis, lat, dn_r)
         safe = jnp.where(q2 > 1e-14, q2, 1.0)
@@ -99,6 +113,10 @@ def make_response(geo: Cell, static: Static, state: SCFState, tol: float = 1e-6)
                 + jnp.sum(df[:nband, None] * jnp.abs(psi_r) ** 2, axis=0)
             )
         return out
+
+    def apply(dn_r):
+        with _pack.native_pack(False):
+            return _apply(dn_r)
 
     return apply
 

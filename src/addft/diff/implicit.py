@@ -19,6 +19,7 @@ import jax.numpy as jnp
 from jax.scipy.sparse.linalg import bicgstab
 
 from ..geometry.cell import Cell
+from ..kernels import pack as _pack
 from ..physics.response import build_jacobian, make_response
 from ..solver.scf import scf_map
 from ..system import SCFState, Static
@@ -28,7 +29,7 @@ def _tree_add(a, b):
     return jax.tree_util.tree_map(lambda x, y: x + y, a, b)
 
 
-def implicit_grad(geo: Cell, static: Static, state: SCFState,
+def _implicit_grad(geo: Cell, static: Static, state: SCFState,
                   loss: Callable, return_diagnostics: bool = False,
                   mode: str = "matrix_free", rtol: float = 1e-10):
     """返回 dL/dgeo，其中 L = loss(geo, static, state) 是标量。
@@ -79,6 +80,16 @@ def implicit_grad(geo: Cell, static: Static, state: SCFState,
         "lam_norm": float(jnp.linalg.norm(lam)),
         "g_norm": float(jnp.linalg.norm(g_n)),
     }
+
+
+def implicit_grad(geo: Cell, static: Static, state: SCFState,
+                  loss: Callable, return_diagnostics: bool = False,
+                  mode: str = "matrix_free", rtol: float = 1e-10):
+    """Adjoint wrapper that disables native pack during transposition."""
+    with _pack.native_pack(False):
+        return _implicit_grad(geo, static, state, loss,
+                              return_diagnostics=return_diagnostics,
+                              mode=mode, rtol=rtol)
 
 
 def forces_from_grad(geo: Cell, grad_cell) -> jnp.ndarray:

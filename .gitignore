@@ -2,3 +2,7 @@ __pycache__/
 .pytest_cache/
 *.pyc
 OUT.*/
+
+# native build artifacts
+native/*.so
+native/*.o

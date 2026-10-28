@@ -60,12 +60,16 @@ def ewald_energy(cell: Cell, charges, eta: float = DEFAULT_ETA, nmax: int = 8):
     g = m @ bmat
     g2 = jnp.sum(g * g, axis=-1)
     keep = g2 > 1e-12
-    g = g[keep]
-    g2 = g2[keep]
+    g2_safe = jnp.where(keep, g2, 1.0)
     sf = jnp.sum(z[None, :] * jnp.exp(-1j * (g @ r.T)), axis=-1)  # (nG,)
-    e_recip = (2.0 * jnp.pi / omega) * jnp.sum(
-        jnp.exp(-g2 / (4.0 * eta ** 2)) / g2 * jnp.real(sf * jnp.conj(sf))
+    # Masked (not boolean-indexed) so Ewald is usable inside jax.jit.
+    term = jnp.where(
+        keep,
+        jnp.exp(-g2_safe / (4.0 * eta ** 2)) / g2_safe
+        * jnp.real(sf * jnp.conj(sf)),
+        0.0,
     )
+    e_recip = (2.0 * jnp.pi / omega) * jnp.sum(term)
 
     # --- self + background
     e_self = -(eta / jnp.sqrt(jnp.pi)) * jnp.sum(z * z)

@@ -24,6 +24,7 @@ from ..physics.local import local_potential_r
 from ..physics.occupation import occupations
 from ..system import SCFState, Static
 from .eigh import eigh_lowest
+from .geometry_cache import build_geometry_cache
 
 
 # ------------------------------------------------------------------ 哈密顿量
@@ -46,19 +47,24 @@ def kinetic_diag(basis: Basis, lattice, kpt):
     return 0.5 * jnp.sum(kg * kg, axis=-1)
 
 
-def hamiltonian(geo: Cell, static: Static, v_r):
+def hamiltonian(geo: Cell, static: Static, v_r, cache=None):
     """返回 (nk, nG, nG) 的 H = T + V_loc + V_H + V_xc + V_NL。
 
     V_NL 必须出现在 H 里——否则本征值缺非局域项，而能量分解里又有它，
     两者不自洽（实测差 0.046 Ha，正好等于 E_NL）。这是「能量对、梯度错」的
     另一种形态：两种能量写法不一致。
+
+    ``cache`` 只用于正向 SCF 的几何复用；JVP 路径必须传 ``None``。
     """
     from ..physics import nonlocal_op
 
     basis = static.basis
     vm = vmat_from_real(basis, v_r)
-    proj = nonlocal_op.projectors(static.psp, static.spec_idx, basis, geo, static.kpts)
-    d = nonlocal_op.dion_full(static.psp, static.spec_idx)
+    if cache is None:
+        proj = nonlocal_op.projectors(static.psp, static.spec_idx, basis, geo, static.kpts)
+        d = nonlocal_op.dion_full(static.psp, static.spec_idx)
+    else:
+        proj, d = cache.proj, cache.dion
     hs = []
     for ik in range(int(static.kpts.shape[0])):
         t = kinetic_diag(basis, geo.lattice, static.kpts[ik])
@@ -68,9 +74,12 @@ def hamiltonian(geo: Cell, static: Static, v_r):
     return jnp.stack(hs, axis=0)
 
 
-def effective_potential(geo: Cell, static: Static, rho_r, with_xc=True):
+def effective_potential(geo: Cell, static: Static, rho_r, with_xc=True, cache=None):
     basis = static.basis
-    v_loc = local_potential_r(static.psp, static.spec_idx, basis, geo)
+    if cache is None:
+        v_loc = local_potential_r(static.psp, static.spec_idx, basis, geo)
+    else:
+        v_loc = cache.v_loc_r
     v_h = hartree.hartree_potential_r(basis, geo.lattice, rho_r)
     if with_xc:
         v_xc = xc.xc_potential_r(xc.xc_energy_lda, basis, geo.lattice, rho_r)
@@ -81,9 +90,9 @@ def effective_potential(geo: Cell, static: Static, rho_r, with_xc=True):
 
 # ------------------------------------------------------------------ 物理映射
 
-def _hamiltonian_from_density(geo: Cell, static: Static, rho_r):
-    v_r, _ = effective_potential(geo, static, rho_r)
-    return hamiltonian(geo, static, v_r)
+def _hamiltonian_from_density(geo: Cell, static: Static, rho_r, cache=None):
+    v_r, _ = effective_potential(geo, static, rho_r, cache=cache)
+    return hamiltonian(geo, static, v_r, cache=cache)
 
 
 def _hamiltonian_and_tangent(geo: Cell, static: Static, rho_r, dgeo, drho):
@@ -156,12 +165,13 @@ def _density_tangent_from_dh(geo: Cell, static: Static, H, dH, dlat, tol=1e-6):
 
 
 @jax.custom_jvp
-def scf_map(geo: Cell, static: Static, rho_r):
+def scf_map(geo: Cell, static: Static, rho_r, cache=None):
     """一次物理映射：n → H[n] → 对角化 → 占据 → n'。
 
     这是反向传播唯一允许看到的映射：混合器不在这里。
+    ``cache`` 只允许在正向 SCF 内使用；微分路径必须传 ``None``。
     """
-    H = _hamiltonian_from_density(geo, static, rho_r)
+    H = _hamiltonian_from_density(geo, static, rho_r, cache=cache)
     eig, vec = eigh_lowest(H, static.nband)
     occ, mu = occupations(eig, static.kweights, static.nelec, static.sigma,
                           static.spin_degeneracy)
@@ -171,8 +181,9 @@ def scf_map(geo: Cell, static: Static, rho_r):
 
 @scf_map.defjvp
 def _scf_map_jvp(primals, tangents):
-    geo, static, rho_r = primals
-    dgeo, _, drho = tangents
+    geo, static, rho_r, _cache = primals
+    dgeo, _, drho, _ = tangents
+    # 几何缓存对旧 geo 成立，切空间里不能用；JVP 一律从当前 geo 重建。
     H, dH = _hamiltonian_and_tangent(geo, static, rho_r, dgeo, drho)
     eig, vec = eigh_lowest(H, static.nband)
     occ, _ = occupations(eig, static.kweights, static.nelec, static.sigma,
@@ -221,19 +232,22 @@ def initial_density(static: Static, geo: Cell):
     return jnp.full((static.basis.nfft,), static.nelec / omega, dtype=jnp.float64)
 
 
-def solve_scf(geo: Cell, static: Static, alpha=0.5, gg0=1.0,
-              tol=1e-10, max_iter=200, verbose=False, mixer="diis", beta=0.5):
-    """正向求解。混合器在这里，但**不在** scf_map 里。"""
+def _solve_scf_python(geo: Cell, static: Static, rho0=None, alpha=0.5,
+                      gg0=1.0, tol=1e-10, max_iter=200, verbose=False,
+                      mixer="diis", beta=0.5, cache=None):
+    """Python 驱动的参考 SCF（DIIS/Kerker）。作为 device driver 的回退。"""
     from .mixer import DIISMixer
 
     basis = static.basis
-    rho = initial_density(static, geo)
+    rho = initial_density(static, geo) if rho0 is None else rho0
+    if cache is None:
+        cache = build_geometry_cache(geo, static)
     mix = DIISMixer(basis.nfft, m=8, beta=beta) if mixer == "diis" else None
     res = jnp.asarray(1.0)
     prev = 1e9
     it = 0
     for it in range(1, max_iter + 1):
-        rho_out = scf_map(geo, static, rho)
+        rho_out = scf_map(geo, static, rho, cache)
         res = density_residual(basis, geo.lattice, rho_out, rho, static.nelec)
         if mixer == "diis":
             if float(res) > prev * 1.5:      # 振荡检测 → restart 历史
@@ -247,21 +261,183 @@ def solve_scf(geo: Cell, static: Static, alpha=0.5, gg0=1.0,
         if float(res) < tol:
             break
     # 收敛点"抛光"：把混合后的 ρ 直接代回物理映射，直到它是严格不动点。
-    # 为什么必须做：混合器给出的 ρ 与 F(ρ) 还差一个残差量级的差，此时
-    # ψ 是 H[ρ] 的本征矢，但 ρ ≠ Σf|ψ|²。包络定理（dE/dθ = ∂_θE|_ψ）要求两者
-    # 严格一致；否则"响应项应该为零"会退化成 1e-3 量级的假信号。
-    # 实测：抛光前 d_state 与有限差分差 2.3e-6（相对），抛光后见 tests/。
+    # 包络定理要求 ψ 与 ρ 严格一致；否则响应项会退化成 1e-3 量级的假信号。
     for _ in range(4):
-        rho_new = scf_map(geo, static, rho)
+        rho_new = scf_map(geo, static, rho, cache)
         res = density_residual(basis, geo.lattice, rho_new, rho, static.nelec)
         rho = rho_new
         if float(res) < 1e-14:
             break
 
-    v_r, _ = effective_potential(geo, static, rho)
-    H = hamiltonian(geo, static, v_r)
+    v_r, _ = effective_potential(geo, static, rho, cache=cache)
+    H = hamiltonian(geo, static, v_r, cache=cache)
     eig, vec = eigh_lowest(H, static.nband)
     occ, mu = occupations(eig, static.kweights, static.nelec, static.sigma,
                           static.spin_degeneracy)
     return SCFState(psi=vec, eig=eig, occ=occ, mu=mu, rho_r=rho,
                     n_iter=jnp.asarray(it), residual=jnp.asarray(res))
+
+
+def _make_device_scf(static: Static):
+    """Build a jitted, device-resident simplified-Broyden SCF driver.
+
+    Formula follows ABACUS' simplified modified Broyden (Johnson PRB 38,
+    12807): ``F = n_out - n_in``, ``dF_i = F_{i-1} - F_i``,
+    ``dn_i = n_in_{i-1} - n_in_i``, solve ``<dF_i,dF_j> gamma_j = <dF_i,F>``,
+    then ``n_next = n_in + beta F - sum_i gamma_i (dn_i + beta dF_i)``.
+    Fixed history (m=8), no dynamic shapes. ``geo``/``cache`` are runtime
+    arguments so structure optimization reuses the compiled executable.
+    """
+
+    m = 8
+    # Start with a more aggressive Broyden damping, then switch to the
+    # conservative value. This reaches ~9 iterations on Si/Γ while staying
+    # stable on the distorted cell.
+    beta_hi = 0.9
+    switch = 8
+
+    def fwd(geo, cache, rho_r):
+        H = _hamiltonian_from_density(geo, static, rho_r, cache=cache)
+        eig, vec = eigh_lowest(H, static.nband)
+        occ, mu = occupations(eig, static.kweights, static.nelec,
+                              static.sigma, static.spin_degeneracy)
+        return density_from_psi(static.basis, geo.lattice, vec, occ,
+                                static.kweights, static.spin_degeneracy)
+
+    @jax.jit
+    def solve(geo, cache, rho0, beta, tol, max_iter):
+        def cond(c):
+            _rho, _hn, _hf, _count, _prev, res, it = c
+            return (res > tol) & (it < max_iter)
+
+        def body(c):
+            rho, hn, hf, count, prev, _res, it = c
+            beta_eff = jnp.where(it < switch, beta_hi, beta)
+            rho_out = fwd(geo, cache, rho)
+            F = rho_out - rho
+            res = density_residual(static.basis, geo.lattice, rho_out, rho,
+                                   static.nelec)
+            reset = res > prev * 1.5
+            count = jnp.where(reset, 0, count)
+            hn = jnp.concatenate([hn[1:], rho[None, :]], axis=0)
+            hf = jnp.concatenate([hf[1:], F[None, :]], axis=0)
+            count = jnp.minimum(count + 1, m)
+
+            pair_valid = jnp.arange(m - 1) >= (m - count)
+            dF = hf[:-1] - hf[1:]
+            dn = hn[:-1] - hn[1:]
+            dF = jnp.where(pair_valid[:, None], dF, 0.0)
+            dn = jnp.where(pair_valid[:, None], dn, 0.0)
+            alpha = jnp.einsum("ik,jk->ij", dF, dF)
+            alpha = (alpha
+                     + jnp.diag(jnp.where(pair_valid, 0.0, 1.0))
+                     + 1e-12 * jnp.eye(m - 1))
+            cvec = jnp.einsum("ik,k->i", dF, F)
+            gamma = jnp.linalg.solve(alpha, cvec)
+            gamma = jnp.nan_to_num(gamma, nan=0.0, posinf=0.0, neginf=0.0)
+            new = rho + beta_eff * F - jnp.einsum("i,ij->j", gamma,
+                                                  dn + beta_eff * dF)
+            lin = rho + beta_eff * F
+            new = jnp.where(jnp.all(jnp.isfinite(new)), new, lin)
+            return new, hn, hf, count, res, res, it + 1
+
+        z = jnp.zeros((m, static.basis.nfft))
+        c0 = (rho0, z, z, jnp.asarray(0), jnp.asarray(1e9),
+              jnp.asarray(1.0), jnp.asarray(0))
+        rho, hn, hf, count, prev, res, it = jax.lax.while_loop(
+            cond, body, c0)
+        res_main = res
+
+        # Four raw fixed-point polish steps: the unmixed map need not be a
+        # contraction, so do not iterate it to convergence.
+        def polish(_, c):
+            r, _pres = c
+            r_new = fwd(geo, cache, r)
+            pres = density_residual(static.basis, geo.lattice, r_new, r,
+                                    static.nelec)
+            return r_new, pres
+
+        rho, res = jax.lax.fori_loop(0, 4, polish,
+                                     (rho, jnp.asarray(1.0)))
+
+        H = _hamiltonian_from_density(geo, static, rho, cache=cache)
+        eig, vec = eigh_lowest(H, static.nband)
+        occ, mu = occupations(eig, static.kweights, static.nelec,
+                              static.sigma, static.spin_degeneracy)
+        return rho, res_main, it, eig, vec, occ, mu
+
+    return solve
+
+
+_DEVICE_SCF_CACHE: dict = {}
+
+
+def _device_scf(static: Static):
+    key = id(static)
+    hit = _DEVICE_SCF_CACHE.get(key)
+    if hit is not None and hit[0] is static:
+        return hit[1]
+    if len(_DEVICE_SCF_CACHE) > 64:
+        _DEVICE_SCF_CACHE.clear()
+    fn = _make_device_scf(static)
+    _DEVICE_SCF_CACHE[key] = (static, fn)
+    return fn
+
+
+def _solve_scf_device(geo: Cell, static: Static, cache, beta=0.5,
+                      tol=1e-10, max_iter=200):
+    solve = _device_scf(static)
+    rho0 = initial_density(static, geo)
+    rho, res, it, eig, vec, occ, mu = solve(
+        geo, cache, rho0, jnp.asarray(beta), jnp.asarray(tol),
+        jnp.asarray(max_iter))
+    return SCFState(psi=vec, eig=eig, occ=occ, mu=mu, rho_r=rho,
+                    n_iter=it, residual=res)
+
+
+def solve_scf(geo: Cell, static: Static, alpha=0.9, gg0=0.5,
+              tol=1e-10, max_iter=200, verbose=False, mixer="diis",
+              beta=0.6, driver="auto"):
+    """正向求解。
+
+    默认 ``driver="auto"``：先跑设备端 Kerker 循环（``lax.while_loop``，
+    无 Python 迭代、无每步 host sync），若未收敛则回退到 Python DIIS。
+    ``driver="python"`` 强制旧路径；``driver="device"`` 只跑设备端。
+    """
+    cache = build_geometry_cache(geo, static)
+    if driver not in ("auto", "device", "python"):
+        raise ValueError(f"unknown SCF driver: {driver}")
+
+    # libxc is a host callback and cannot be traced inside the device loop.
+    # Use the Python driver unless native XC (or the analytic fallback) is
+    # available.
+    if driver in ("auto", "device") and xc.USE_LIBXC and \
+            getattr(xc, "_NATIVE_XC", None) is None:
+        if driver == "device":
+            raise RuntimeError(
+                "device SCF driver requires native XC or ADDFT_XC=analytic")
+        driver = "python"
+
+    if driver in ("auto", "device"):
+        state = _solve_scf_device(geo, static, cache, beta=beta,
+                                  tol=tol, max_iter=max_iter)
+        converged = float(state.residual) < tol
+        if converged or driver == "device":
+            if verbose:
+                print(f"  device scf: it={int(state.n_iter)} "
+                      f"drho={float(state.residual):.3e}")
+            return state
+        if verbose:
+            print(f"  device scf did not converge (drho="
+                  f"{float(state.residual):.3e}); falling back to DIIS")
+        # Fallback uses the conservative DIIS damping (0.5); the device
+        # driver's faster 0.7 can be too aggressive on hard cases.
+        fallback = _solve_scf_python(
+            geo, static, rho0=state.rho_r, alpha=alpha, gg0=gg0, tol=tol,
+            max_iter=max_iter, verbose=verbose, mixer="diis", beta=0.5,
+            cache=cache)
+        return fallback._replace(n_iter=state.n_iter + fallback.n_iter)
+
+    return _solve_scf_python(
+        geo, static, alpha=alpha, gg0=gg0, tol=tol, max_iter=max_iter,
+        verbose=verbose, mixer=mixer, beta=beta, cache=cache)

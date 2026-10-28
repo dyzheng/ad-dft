@@ -20,9 +20,21 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
+try:
+    from ..kernels.eigh import load_eigh_lowest
+    _NATIVE_EIGH = load_eigh_lowest()
+except Exception:  # pragma: no cover - 取决于本地是否构建了 native/
+    _NATIVE_EIGH = None
+
 
 def eigh_lowest(H, nband: int):
-    """H: (..., nG, nG) Hermitian → (eig (..., nband), vec (..., nband, nG))。"""
+    """H: (..., nG, nG) Hermitian → (eig (..., nband), vec (..., nband, nG))。
+
+    有原生 cuSOLVER kernel 时走原生路径；否则回退到 `jnp.linalg.eigh`。
+    原生路径只用于正向求解，微分层由 `scf_map` 的解析微扰提供，不穿过 eigh。
+    """
+    if _NATIVE_EIGH is not None and H.ndim == 3 and H.dtype == jnp.complex128:
+        return _NATIVE_EIGH(H, int(nband))
     w, v = jnp.linalg.eigh(H)
     w = w[..., :nband]
     v = jnp.swapaxes(v[..., :, :nband], -1, -2)
