@@ -13,16 +13,20 @@
 
 from __future__ import annotations
 
+import os
+
 import jax
 import jax.numpy as jnp
 
 from ..geometry.basis import Basis, g2, gvectors, psi_to_real
 from ..geometry.cell import Cell, volume
+from ..ops.hpsi import hpsi
 from ..physics import hartree, xc
 from ..physics.density import density_from_psi
 from ..physics.local import local_potential_r
 from ..physics.occupation import occupations
 from ..system import SCFState, Static
+from .davidson import davidson_lowest
 from .eigh import eigh_lowest
 from .geometry_cache import build_geometry_cache
 
@@ -278,6 +282,141 @@ def _solve_scf_python(geo: Cell, static: Static, rho0=None, alpha=0.5,
                     n_iter=jnp.asarray(it), residual=jnp.asarray(res))
 
 
+def _broyden_py(rho, rho_out, hist_r, hist_f, beta, m=8):
+    """Simplified Broyden update for the Python Davidson SCF path."""
+    F = rho_out - rho
+    hist_r = (hist_r + [rho])[-m:]
+    hist_f = (hist_f + [F])[-m:]
+    n = len(hist_r)
+    if n == 1:
+        return rho + beta * F, hist_r, hist_f
+    R = jnp.stack(hist_f, axis=0)
+    H = jnp.stack(hist_r, axis=0)
+    dF = R[:-1] - R[1:]
+    dn = H[:-1] - H[1:]
+    alpha = jnp.einsum("ik,jk->ij", dF, dF) + 1e-12 * jnp.eye(n - 1)
+    c = jnp.einsum("ik,k->i", dF, F)
+    gamma = jnp.nan_to_num(jnp.linalg.solve(alpha, c),
+                           nan=0.0, posinf=0.0, neginf=0.0)
+    new = rho + beta * F - jnp.einsum("i,ij->j", gamma, dn + beta * dF)
+    lin = rho + beta * F
+    return jnp.where(jnp.all(jnp.isfinite(new)), new, lin), hist_r, hist_f
+
+
+_DAVIDSON_CACHE: dict = {}
+
+
+def _davidson_fns(static: Static):
+    """Cache jitted cold/warm Davidson calls for one Static."""
+    key = id(static)
+    hit = _DAVIDSON_CACHE.get(key)
+    if hit is not None and hit[0] is static:
+        return hit[1], hit[2]
+    if len(_DAVIDSON_CACHE) > 64:
+        _DAVIDSON_CACHE.clear()
+    nb = int(static.nband)
+    # ABACUS uses nbase_x = 4*nband. For small nband we keep at least 48
+    # because evolution found it faster on the 6-band 100 Ry case.
+    default_max_sub = max(48, 4 * nb)
+    max_sub = int(os.environ.get("ADDFT_DAVID_MAX_SUB", str(default_max_sub)))
+    cold_iter = int(os.environ.get("ADDFT_DAVID_COLD", "15"))
+    warm_iter = int(os.environ.get("ADDFT_DAVID_WARM", "5"))
+    precond = os.environ.get("ADDFT_DAVID_PRECOND", "abacus")
+    precond_alpha = float(os.environ.get("ADDFT_DAVID_PRECOND_ALPHA", "1.0"))
+
+    @jax.jit
+    def cold(geo, cache, v_r, X, Td):
+        def apply(p):
+            return hpsi(geo, static, p.swapaxes(-1, -2), v_r, cache).swapaxes(-1, -2)
+        return davidson_lowest(apply, X, nb, Td + jnp.mean(v_r),
+                               max_sub=max_sub, max_iter=cold_iter,
+                               precond=precond, precond_alpha=precond_alpha)
+
+    @jax.jit
+    def warm(geo, cache, v_r, X, Td):
+        def apply(p):
+            return hpsi(geo, static, p.swapaxes(-1, -2), v_r, cache).swapaxes(-1, -2)
+        return davidson_lowest(apply, X, nb, Td + jnp.mean(v_r),
+                               max_sub=max_sub, max_iter=warm_iter,
+                               precond=precond, precond_alpha=precond_alpha)
+
+    _DAVIDSON_CACHE[key] = (static, cold, warm)
+    return cold, warm
+
+
+def _solve_scf_davidson(geo: Cell, static: Static, cache, tol=1e-10,
+                        max_iter=60, alpha=0.7, gg0=0.5, verbose=False):
+    """SCF using matrix-free Davidson instead of dense eigh."""
+    basis = static.basis
+    nb = int(static.nband)
+    nk = int(static.kpts.shape[0])
+    nG = int(basis.nG)
+    kpts = static.kpts
+    Td = jnp.stack([
+        0.5 * jnp.sum(gvectors(basis, geo.lattice, kpts[ik]) ** 2, axis=-1)
+        for ik in range(nk)
+    ])
+    eye = jnp.eye(nG, dtype=jnp.complex128)[:, :nb]
+    X = jnp.broadcast_to(eye[None, :, :], (nk, nG, nb))
+    davidson_cold, davidson_warm = _davidson_fns(static)
+
+    rho = initial_density(static, geo)
+    mix_mode = os.environ.get("ADDFT_DAVID_MIXER", "")
+    use_broyden = (int(static.spec_idx.shape[0]) <= 2) or (mix_mode == "broyden")
+    broyden_hi = float(os.environ.get("ADDFT_BROYDEN_HI", "0.9"))
+    broyden_lo = float(os.environ.get("ADDFT_BROYDEN_LO", "0.5"))
+    eig_tol = float(os.environ.get("ADDFT_DAVID_EIG_TOL", "1e-3"))
+    hist_r, hist_f = [], []
+    prev = 1e9
+    res = jnp.asarray(1.0)
+    it = 0
+    for it in range(1, int(max_iter) + 1):
+        v_r, _ = effective_potential(geo, static, rho, cache=cache)
+        if it == 1:
+            eig, vec, eig_res = davidson_cold(geo, cache, v_r, X, Td)
+        else:
+            eig, vec, eig_res = davidson_warm(geo, cache, v_r, X, Td)
+            if float(eig_res) > eig_tol:
+                eig, vec, eig_res = davidson_cold(geo, cache, v_r, X, Td)
+        occ, mu = occupations(eig, static.kweights, static.nelec,
+                              static.sigma, static.spin_degeneracy)
+        rho_out = density_from_psi(basis, geo.lattice, vec, occ,
+                                   static.kweights, static.spin_degeneracy)
+        res = density_residual(basis, geo.lattice, rho_out, rho, static.nelec)
+        if verbose:
+            print(f"  davidson scf {it:3d}  drho={float(res):.3e}  "
+                  f"eigres={float(eig_res):.2e}")
+        X = vec.swapaxes(-1, -2)
+        if use_broyden:
+            if float(res) > prev * 1.5:
+                hist_r, hist_f = [], []
+            prev = float(res)
+            beta = broyden_hi if it <= 8 else broyden_lo
+            rho, hist_r, hist_f = _broyden_py(rho, rho_out, hist_r, hist_f, beta)
+        else:
+            rho = kerker_mix(basis, geo.lattice, rho, rho_out, alpha, gg0)
+        if float(res) < tol:
+            break
+
+    for _ in range(4):
+        v_r, _ = effective_potential(geo, static, rho, cache=cache)
+        eig, vec, eig_res = davidson_warm(geo, cache, v_r, X, Td)
+        if float(eig_res) > eig_tol:
+            eig, vec, eig_res = davidson_cold(geo, cache, v_r, X, Td)
+        occ, mu = occupations(eig, static.kweights, static.nelec,
+                              static.sigma, static.spin_degeneracy)
+        rho_new = density_from_psi(basis, geo.lattice, vec, occ,
+                                   static.kweights, static.spin_degeneracy)
+        res = density_residual(basis, geo.lattice, rho_new, rho, static.nelec)
+        X = vec.swapaxes(-1, -2)
+        rho = rho_new
+        if float(res) < 1e-14:
+            break
+
+    return SCFState(psi=vec, eig=eig, occ=occ, mu=mu, rho_r=rho,
+                    n_iter=jnp.asarray(it), residual=jnp.asarray(res))
+
+
 def _make_device_scf(static: Static):
     """Build a jitted, device-resident simplified-Broyden SCF driver.
 
@@ -295,6 +434,8 @@ def _make_device_scf(static: Static):
     # stable on the distorted cell.
     beta_hi = 0.9
     switch = 8
+    early_steps = 20
+    early_tol = 1e-3
 
     def fwd(geo, cache, rho_r):
         H = _hamiltonian_from_density(geo, static, rho_r, cache=cache)
@@ -308,7 +449,10 @@ def _make_device_scf(static: Static):
     def solve(geo, cache, rho0, beta, tol, max_iter):
         def cond(c):
             _rho, _hn, _hf, _count, _prev, res, it = c
-            return (res > tol) & (it < max_iter)
+            # If the device Broyden has not made progress after the warm-up
+            # window, stop early and let solve_scf fall back to Python DIIS.
+            alive = (it < early_steps) | (res < early_tol)
+            return (res > tol) & (it < max_iter) & alive
 
         def body(c):
             rho, hn, hf, count, prev, _res, it = c
@@ -397,7 +541,7 @@ def _solve_scf_device(geo: Cell, static: Static, cache, beta=0.5,
 
 def solve_scf(geo: Cell, static: Static, alpha=0.9, gg0=0.5,
               tol=1e-10, max_iter=200, verbose=False, mixer="diis",
-              beta=0.6, driver="auto"):
+              beta=0.6, driver="auto", eigh_solver="auto"):
     """正向求解。
 
     默认 ``driver="auto"``：先跑设备端 Kerker 循环（``lax.while_loop``，
@@ -405,6 +549,12 @@ def solve_scf(geo: Cell, static: Static, alpha=0.9, gg0=0.5,
     ``driver="python"`` 强制旧路径；``driver="device"`` 只跑设备端。
     """
     cache = build_geometry_cache(geo, static)
+    nG = int(static.basis.nG)
+    if eigh_solver not in ("auto", "dense", "davidson"):
+        raise ValueError(f"unknown eigh_solver: {eigh_solver}")
+    if eigh_solver == "davidson" or (eigh_solver == "auto" and nG > 3000):
+        return _solve_scf_davidson(geo, static, cache, tol=tol,
+                                   max_iter=min(max_iter, 80), verbose=verbose)
     if driver not in ("auto", "device", "python"):
         raise ValueError(f"unknown SCF driver: {driver}")
 
@@ -418,9 +568,22 @@ def solve_scf(geo: Cell, static: Static, alpha=0.9, gg0=0.5,
                 "device SCF driver requires native XC or ADDFT_XC=analytic")
         driver = "python"
 
+    # Device Broyden is excellent for the 2-atom cells but can stall on
+    # larger cells; use the stable Python DIIS there until the device mixer
+    # is improved. This is a heuristic, not a physics change.
+    if driver == "auto" and int(static.spec_idx.shape[0]) > 2 and \
+            int(static.basis.nG) > 800:
+        driver = "python"
+        if mixer == "diis":
+            # Kerker is much more stable than high-beta DIIS on the 8/16-atom
+            # cells tested so far.
+            mixer = "kerker"
+            alpha, gg0 = 0.7, 0.5
+
     if driver in ("auto", "device"):
+        device_cap = min(max_iter, 60) if driver == "auto" else max_iter
         state = _solve_scf_device(geo, static, cache, beta=beta,
-                                  tol=tol, max_iter=max_iter)
+                                  tol=tol, max_iter=device_cap)
         converged = float(state.residual) < tol
         if converged or driver == "device":
             if verbose:
@@ -432,9 +595,10 @@ def solve_scf(geo: Cell, static: Static, alpha=0.9, gg0=0.5,
                   f"{float(state.residual):.3e}); falling back to DIIS")
         # Fallback uses the conservative DIIS damping (0.5); the device
         # driver's faster 0.7 can be too aggressive on hard cases.
+        fb_beta = 0.8 if int(static.basis.nG) > 800 else 0.5
         fallback = _solve_scf_python(
             geo, static, rho0=state.rho_r, alpha=alpha, gg0=gg0, tol=tol,
-            max_iter=max_iter, verbose=verbose, mixer="diis", beta=0.5,
+            max_iter=max_iter, verbose=verbose, mixer="diis", beta=fb_beta,
             cache=cache)
         return fallback._replace(n_iter=state.n_iter + fallback.n_iter)
 

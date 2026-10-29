@@ -34,10 +34,10 @@ for the future Davidson/LOBPCG replacement. `ADDFT_NATIVE_EIGH=0` disables it.
 
 ### `pack.cu` — G-shell scatter/gather
 
-Complex128 scatter/gather for coefficient <-> FFT-grid packing. Forward SCF
-uses the native kernels; JVP/VJP use the equivalent JAX scatter/gather via
-`custom_jvp`, so gradients and `linear_transpose` remain valid. Response /
-adjoint paths temporarily fall back to JAX.
+Complex128/complex64 scatter/gather for coefficient <-> FFT-grid packing.
+Forward SCF uses the native kernels; JVP/VJP use the equivalent JAX
+scatter/gather via `custom_jvp`, so gradients and `linear_transpose` remain
+valid. Response / adjoint paths temporarily fall back to JAX.
 
 | item | JAX | native |
 |---|---:|---:|

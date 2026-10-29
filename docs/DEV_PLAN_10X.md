@@ -308,13 +308,13 @@ C^H S C = I
 | ID | 方案 | 状态 | 原型/脚本 | 关键指标 | 结果 | 决策 |
 |---|---|---|---|---|---|---|
 | E0 | ABACUS 1 核/GPU 基线 | green | `docs/experiments/E0-baseline.md` | wall, E/F/σ | 20/40/100 Ry 已记录 | 继续 E1 |
-| E1 | Matrix-free Hψ | green* | `docs/experiments/E1-hpsi.md` | FP64 <2 ms / FP32 <1 ms | FP64 1.26 ms；FP32 待做 | 进入 E2/E4 |
-| E2 | Davidson warm | yellow | `docs/experiments/E2-lobpcg.md` | <20 matvec | 5 步残差 8e-3 @100 Ry | 转 E3/E5 |
+| E1 | Matrix-free Hψ | green* | `docs/experiments/E1-hpsi.md` | FP64 <2 ms / FP32 <1 ms | FP64 1.26 ms；FP32 ~1.5 ms | 需 fused Hψ |
+| E2 | Davidson (matrix-free) | green* | `docs/experiments/E2-davidson.md` | <20 matvec | 100 Ry SCF ~1.2s vs 35.4s | 已接入 nG>3000 |
 | E3 | Direct Mermin min | yellow | `docs/experiments/E3-direct-min.md` | <15 evals | 简单梯度 3 步后停滞 | 需 L-BFGS/trust-region |
-| E4 | FP32/TF32 + tensor cores | yellow | `docs/experiments/E4-fp32-eigh.md` | 2–5× | FP32 eigh 3.5×，精度不足 | 需 Chebyshev/Lanczos 精化 |
+| E4 | FP32/TF32 + tensor cores | yellow | `docs/experiments/E4-fp32-eigh.md` | 2–5× | FP32 eigh 3.5×；FP32 Hψ ~1.5ms | 需 fused Hψ/FFT |
 | E5 | Compressed/ALB/PAO | parked | 需独立基组 track | 5× DOF, <1 meV | — | 契约变化 |
 | E6 | Density-matrix min | yellow | `docs/experiments/E6-density-matrix.md` | no eigh, linear | 20 Ry 可达 1e-14；100 Ry FP64 GEMM 1.8s | 仅大体系/稀疏 P |
-| E7 | Divide-and-conquer | parked | `solver/dc.py` | near-linear | — | 大体系再启用 |
+| E7 | Divide-and-conquer / scaling | active | `docs/experiments/E7-scaling.md` | near-linear | 2/8/16 原子已测；16 原子 21× 慢 | 百原子必须换表示 |
 | E8 | Persistent/CUDA Graph | partial | runtime | <5% overhead | device loop/native pack 已做 | 继续 CUDA Graph |
 | E9 | PAW/NAO | parked | separate | 5–20× | — | 契约变化 |
 | E10 | TT/neural | parked | research | 10×+ | — | 研究 |
@@ -432,10 +432,10 @@ E3 + E5 都达标
 | ID | 状态 | 关键结果 | 是否进入主路径 |
 |---|---|---|---|
 | E0 | green | 20/40/100 Ry 基线 | 是 |
-| E1 | green* | matrix-free `Hψ` 1.26 ms @100 Ry（FP64） | 代码已落地，FP32 待做 |
-| E2 | yellow | LOBPCG/Chebyshev/Krylov 最好残差 ~1e-3 | 否 |
+| E1 | green* | matrix-free `Hψ` 1.26 ms FP64 / ~1.5 ms FP32 @100 Ry | 代码已落地，需 fused |
+| E2 | green* | matrix-free Davidson 100 Ry ~1.2s | 是（nG>3000） |
 | E3 | yellow | 简单梯度 0.1 mHa 后停滞 | 否 |
-| E4 | yellow | FP32 eigh 3.5×，精度不足 | 否 |
+| E4 | yellow | FP32 eigh 3.5×；FP32 Hψ ~1.5 ms | 否（需 fused） |
 | E5 | parked | 需独立基组 track | 否 |
 | E6 | yellow | 20 Ry 可达 1e-14；100 Ry FP64 GEMM 不划算 | 否 |
 | E7 | parked | 大体系才适用 | 否 |
@@ -443,11 +443,12 @@ E3 + E5 都达标
 | E9/E10 | parked | 契约/研究 | 否 |
 
 **当前事实：**
-- 100 Ry 生产路径仍是 dense eigh，35.2 s；10× 未达成；
+- 100 Ry 生产路径（nG>3000）已切到 matrix-free Davidson，SCF ~1.2 s；
+- 小 nG 保留 dense eigh 作为低延迟/高精度 fallback；
+- 10× 仍未达成（100 Ry SCF ~1.2s vs ABACUS 0.68s，约 1.8× 慢）；
 - E1 证明了 matrix-free 路线可行；
-- 低成本 eigensolver 全部不够，下一步必须做二者之一：
-  1. **Lanczos/shift-invert + 强预条件**（E2b）；
-  2. **Riemannian L-BFGS/trust-region**（E3b）；
+- 下一步是把 Davidson 内部 matvec 数降下来（RMM-DIIS/更强预条件/更小 warm 子空间）
+  或转向 E3b 直接最小化；
 - E5 压缩基组是唯一可能直接改变 10× 量级的表示层方案，但需要契约决策；
 - E7/E9/E10 不是当前小体系可验证的方案。
 

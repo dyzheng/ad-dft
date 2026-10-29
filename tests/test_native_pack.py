@@ -43,3 +43,20 @@ def test_pack_batched_scatter():
     one = flat.at[idx].set(c[0, 0], unique_indices=True).reshape(b.fft_shape)
     assert float(jnp.max(jnp.abs(g[0, 0] - one))) == 0.0
     assert g.shape == (2, 3) + tuple(b.fft_shape)
+
+
+def test_pack_c64_matches_jax():
+    import addft.kernels.pack as P
+    if not P._C64_READY:
+        pytest.skip("native complex64 pack not available")
+    s = make_system()
+    b = s.static.basis
+    idx = B._flat_index(b.fft_shape, b.miller)
+    c = (jnp.sin(jnp.arange(b.nG) * 0.17)
+         + 1j * jnp.cos(jnp.arange(b.nG) * 0.23)).astype(jnp.complex64)
+    g = B.coeffs_to_grid(b, c)
+    flat = jnp.zeros((b.nfft,), dtype=c.dtype)
+    g_ref = flat.at[idx].set(c, unique_indices=True).reshape(b.fft_shape)
+    assert float(jnp.max(jnp.abs(g - g_ref))) == 0.0
+    cc = B.grid_to_coeffs(b, g)
+    assert float(jnp.max(jnp.abs(cc - jnp.take(g.reshape(-1), idx)))) == 0.0

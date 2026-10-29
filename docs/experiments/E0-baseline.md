@@ -43,3 +43,19 @@ python -m pytest tests/test_native_pack.py -q
 ```
 
 详细对照见 `docs/reports/ABACUS_COMPARISON.md`。
+
+
+## 公平基线（100 Ry）
+
+| 平台 | wall |
+|---|---:|
+| ABACUS CPU 1 核 | 0.67 s |
+| ABACUS MPI 4 | 0.35 s |
+| ABACUS MPI 8 | 0.42 s |
+| ABACUS MPI 20 | 2.50 s |
+| ABACUS GPU v3.10.1 | 2.51 s |
+| ad-dft GPU SCF | 1.23 s |
+| ad-dft GPU E+F | 2.33 s |
+| ad-dft CPU 1 线程 SCF | 10.97 s |
+
+ABACUS GPU 与 CPU 版本不同，最终对比需同 commit GPU 构建。

@@ -121,7 +121,7 @@ PY
 
 | 量 | ABACUS 1 核 | ad-dft GPU | 比值 |
 |---|---:|---:|---:|
-| SCF wall | **0.68 s** | **35.4 s** | **52×** |
+| SCF wall | **0.68 s** | **~1.2 s** | **1.8×** |
 
 ad-dft 首次调用含编译约 41.4 s；35.2 s 是 warm 结果。
 ABACUS 内部计时总计 0.42 s（wall 0.68 s）。
@@ -130,11 +130,11 @@ ABACUS 内部计时总计 0.42 s（wall 0.68 s）。
 
 | 步骤 | 单次 | 调用数 | 总计 | 占 SCF |
 |---|---:|---:|---:|---:|
-| **eigh（dense cuSOLVER）** | **2.36 s** | 15 | **35.4 s** | **~99%** |
-| H 组装（缓存 P/D） | 9 ms | 15 | 0.135 s | 0.4% |
-| Hartree（native pack） | 1.5 ms | 15 | 0.023 s | 0.1% |
-| density（native pack） | 0.13 ms | 15 | 0.002 s | <0.1% |
-| XC | 2 ms | 15 | 0.03 s | 0.1% |
+| **Davidson（matrix-free）** | **~0.04–0.09 s/次** | 14 | **~1.3 s** | **~96%** |
+| Hψ（6 bands） | 1.59 ms | 14 | 0.022 s | 1% |
+| effective potential | 1.49 ms | 14 | 0.021 s | 1% |
+| density | 1.40 ms | 14 | 0.020 s | 1% |
+| XC | 2 ms | 14 | 0.028 s | 1% |
 | occupations | <1 ms | 15 | ~0 | — |
 | geometry cache | 0.13 s | 1 | 0.13 s | 0.4% |
 
@@ -163,11 +163,12 @@ ABACUS 内部计时总计 0.42 s（wall 0.68 s）。
 
 ### 6.5 结论
 
-100 Ry 下 **双方迭代数相同（10 次）**，所以性能差距几乎完全来自
-本征求解：
+100 Ry 下 **双方迭代数相同（10 次）**，但 Davidson 内部实现和
+matvec 数不同：
 
-- ad-dft：`nG×nG` dense eigh，`O(nG³)`，2.36 s/次；
-- ABACUS：Davidson，34 次 `hPsi` + 34 次小空间 `diag_zhegvx`。
+- ABACUS：34 次 `hPsi` + 34 次小空间 `diag_zhegvx`，合计 0.43 s；
+- ad-dft：约 1 cold 15 + 9 warm 7 + 4 polish 7，每次 Hψ 只作用在
+  新列上（Hψ 缓存）；单次 6-band Hψ 1.59 ms，等效 matvec 约 500–600 次。
 
 随截断升高的 scaling：
 
@@ -175,7 +176,45 @@ ABACUS 内部计时总计 0.42 s（wall 0.68 s）。
 |---|---:|---:|---:|---:|
 | 20 Ry | 411 | 0.45 s | 0.184 s | 2.4× |
 | 40 Ry | 1139 | 1.53 s | 0.35 s | 4.4× |
-| 100 Ry | 4477 | 35.2 s | 0.68 s | **52×** |
+| 100 Ry | 4477 | ~1.2 s（Davidson） | 0.68 s | **1.8×** |
 
-这就是下一步必须做生产级 Davidson/LOBPCG 的原因；Hartree/density/XC
-经过 native pack 后已不是瓶颈。
+下一步不是再写一个 Davidson，而是减少 Davidson 内部 matvec：
+RMM-DIIS/更强预条件/更小 warm 子空间，以及 FP32/fused Hψ。
+
+
+---
+
+## 7. 公平基线补充（100 Ry）
+
+| 平台 | wall / 说明 |
+|---|---:|
+| ABACUS CPU 1 核 | 0.67 s（含 force/stress） |
+| ABACUS MPI 4 核 | **0.35 s** |
+| ABACUS MPI 8 核 | 0.42 s |
+| ABACUS MPI 20 核 | 2.50 s（该构建线程/ELPA 配置不佳） |
+| ABACUS GPU（v3.10.1） | 2.51 s（含 force/stress） |
+| ad-dft GPU | 1.23 s SCF / 2.33 s E+F / 2.24 s stress |
+| ad-dft CPU 1 线程 | **10.97 s SCF** |
+
+注意：ABACUS GPU 是 v3.10.1，CPU 是 v3.11.0-beta7，版本不同；GPU 基线需要
+同 commit GPU 构建后再最终定论。
+
+当前结论：
+
+- ad-dft GPU 相对 ABACUS 1 核：SCF 约 1.8× 慢，E+F 约 3.4× 慢；
+- 相对 ABACUS 4 核：E+F 约 6.7× 慢；
+- ad-dft GPU 相对 ad-dft CPU：约 9× 加速；
+- 因此“GPU 打 CPU”不能证明 10×；必须继续算法/表示优化。
+
+
+## 8. 16 原子（20 Ry）补充
+
+| 平台 | SCF |
+|---|---:|
+| ABACUS CPU 1 核 | 1.86 s |
+| ABACUS MPI 4 | 0.79 s |
+| ABACUS MPI 8 | 0.76 s |
+| ad-dft GPU（auto→Davidson） | 5.2 s（32 iters） |
+
+当前 ad-dft 比 ABACUS 8 MPI 慢约 6.8×；主要差距是 SCF 迭代数（32 vs 9）
+和单步 Davidson/QR/FFT 成本，而不是 dense eigh。

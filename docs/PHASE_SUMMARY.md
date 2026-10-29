@@ -10,6 +10,16 @@
 
 ## 0. 一页速览
 
+### 最近进展（2026-10-29）
+
+- `nG>3000` 自动使用 matrix-free Davidson；
+- `max_sub=max(48, 4*nband)`，修复 16 原子 `nband=34` 子空间过小的问题；
+- 100 Ry SCF ~1.2 s；16 原子 20 Ry SCF 5.2 s（dense 43.2 s）；
+- 公平基线：ABACUS 1 核 0.67 s、4 MPI 0.35 s、8 MPI 0.76 s（16 原子）；
+- 自演化：`max_sub=48, cold=15, warm=5, ABACUS 预条件 α=1.0, Broyden 0.9→0.5`；
+- 全量非 slow + slow 力测试通过；唯一失败是外部 ABACUS 示例路径缺失。
+
+
 ### 项目定位
 
 ad-dft 是一个**可微周期性平面波 DFT 内核**：能量是唯一可微标量，
@@ -22,14 +32,15 @@ ad-dft 是一个**可微周期性平面波 DFT 内核**：能量是唯一可微�
 | L0 运行时（单位/dtype） | 稳定 | Ry↔Ha 只在边界转换；x64 |
 | L1 几何（Cell/Basis/KMesh/UPF） | 稳定 | 可微 Cell；冻结壳层；FFT 盒规则 |
 | L2 原语（密度/Hartree/XC/local/nonlocal/Ewald/occupation） | 稳定 | LDA；单 species；NLCC 显式拒绝 |
-| L3 求解器（eigh/mixer/SCF） | 可用，性能受限 | dense eigh 是 100 Ry 主瓶颈；设备端 Broyden |
+| L3 求解器（eigh/mixer/SCF） | 可用 | 小 nG dense eigh；nG>3000 matrix-free Davidson；Broyden/Kerker |
 | L4 微分（envelope/implicit） | 稳定 | I-15、FD 力、伴随残差门禁通过 |
 | L5 观测量（能量/力/应力/ΔQ） | 稳定 | 与 ABACUS 对照通过 |
 | 原生 XC kernel | 稳定 | 18.8 ms → 0.18 ms |
 | 原生 cuSOLVER eigh | 可用 | 小 `nG` 与 XLA 持平，大 `nG` 约 1.3× |
-| 原生 pack scatter/gather | 稳定 | `real_from_g` 7.3/29.8 ms → 0.2/1.34 ms |
-| Matrix-free Hψ | 实验（已落地，未接入主路径） | 100 Ry 1.26 ms（FP64） |
-| Davidson/LOBPCG/压缩基 | 未达生产 | 见 E2/E3/E5 |
+| 原生 pack scatter/gather | 稳定 | complex128/64；`real_from_g` 7.3/29.8 ms → 0.2/1.34 ms |
+| Matrix-free Hψ | 生产（nG>3000） | 已接入 Davidson；100 Ry 1.26 ms（FP64） |
+| Davidson | 生产（nG>3000） | 100 Ry ~1.2s；16 原子 ~5.2s；小 nG 保留 dense |
+| LOBPCG/压缩基 | 未达生产 | 见 E2a/E5 |
 
 ### 当前性能基线（SCF）
 
@@ -37,7 +48,14 @@ ad-dft 是一个**可微周期性平面波 DFT 内核**：能量是唯一可微�
 |---|---:|---:|---:|---:|---:|
 | Si/Γ 20 Ry | 411 | 13824 | 0.184 s | **0.45 s** | 2.4× |
 | Si/Γ 40 Ry | 1139 | 32768 | 0.35 s | **1.53 s** | 4.4× |
-| Si/Γ 100 Ry | 4477 | 110592 | 0.68 s | **35.4 s** | 52× |
+| Si/Γ 100 Ry | 4477 | 110592 | 0.68 s（1 核） | **~1.2 s** | 1.8× |
+| 16 原子 20 Ry | 3143 | 91125 | 1.86 s（1 核） | **5.2 s** | 2.8× |
+
+16 原子 ABACUS 8 MPI 为 0.76 s，因此 ad-dft 相对 8 MPI 约 6.8× 慢。
+
+公平基线：ABACUS MPI 4 核 0.35 s；ad-dft GPU E+F 2.33 s；ad-dft CPU 1 线程
+SCF 10.97 s。16 原子 20 Ry：ABACUS 8 MPI 0.76 s，ad-dft GPU 5.2 s。
+当前 GPU-vs-1CPU 对比不能证明 10×。
 
 当前 E+F/σ（warm，value_and_grad 已改为单次 SCF）：
 
@@ -46,10 +64,11 @@ ad-dft 是一个**可微周期性平面波 DFT 内核**：能量是唯一可微�
 | Si/Γ 20 Ry | 1.35 s | 1.36 s |
 | Si 畸变 20 Ry | 1.45 s | 1.50 s |
 | Si/Γ 40 Ry | 2.38 s | 2.40 s |
-| Si/Γ 100 Ry | 36.6 s | 36.6 s |
+| Si/Γ 100 Ry | 2.33 s | 2.24 s |
 
-100 Ry 的 35.4 s 中，dense eigh 约 **35.4 s**（2.36 s × 15 次），
-其它所有分量合计 <0.4 s。
+100 Ry 的 dense-eigh 路径是 35.4 s；`nG>3000` 已切到 matrix-free
+Davidson，SCF ~1.2 s。16 原子 20 Ry 修好 `max_sub=max(48,4*nband)` 后
+从 dense 43.2 s 降到 5.2 s；主要成本是 Davidson matvec/QR，而不是 FFT/XC。
 
 ### 当前生产路径
 
@@ -57,8 +76,8 @@ ad-dft 是一个**可微周期性平面波 DFT 内核**：能量是唯一可微�
 Cell/Basis (冻结壳层)
   → geometry cache (v_loc, projectors, D)
   → effective potential (Hartree + XC + local)
-  → dense H (T + V + V_NL)
-  → native cuSOLVER eigh_lowest
+  → nG>3000: matrix-free Davidson + cached Hψ
+     否则: dense H + native cuSOLVER eigh_lowest
   → occupations (JIT)
   → device-side Broyden SCF (lax.while_loop)
   → 4 步 fixed-point polish
@@ -317,7 +336,7 @@ native/hpsi.cu     → (计划)  → ops.hpsi
 
 - 只接受子空间不变输出（密度矩阵/投影/总能量）；
 - 禁止单本征值求导；
-- V0 用 dense eigh；K09 规划 Davidson/LOBPCG。
+- 小 nG 用 dense eigh；nG>3000 用 matrix-free Davidson；max_sub=max(48,4*nband)，eig_tol=1e-3。
 
 **尝试/效果**
 
@@ -451,17 +470,18 @@ native/hpsi.cu     → (计划)  → ops.hpsi
 
 ### `native/pack.cu`
 
-- complex128 scatter/gather；
+- complex128/complex64 scatter/gather；
 - forward 原生，JVP/VJP 用 JAX fallback（`custom_jvp`）；
 - response/adjoint 临时关闭 native；
 - `real_from_g` 7.3/29.8 ms → 0.2/1.34 ms；
+- FP32 Hψ 约 1.5 ms（FP64 ~3.7 ms），但仍 >0.5 ms 目标；
 - 失败点：直接 FFI 不可微；`linear_transpose` 会绕过 custom_jvp 转置原始 FFI。
 
 ### `src/addft/ops/hpsi.py`（实验）
 
 - matrix-free `Hψ`：T + V + V_NL；
 - 100 Ry 1.26 ms；dense Hψ 707 ms；
-- 未接入主路径；是 Davidson/直接最小化的基础。
+- 已接入 nG>4000 的 Davidson 主路径；直接最小化仍待开发。
 
 ### 构建与开关
 
@@ -544,14 +564,15 @@ test_abacus_io.py            1 failed, 4 passed   # 外部 /root/abacus-develop 
 test_contracts.py            6 passed
 test_forces.py               3 passed, 5 deselected
 test_harness_catches_bugs.py 6 passed
-test_hpsi.py                 2 passed
+test_hpsi.py                 3 passed
 test_invariants.py           8 passed
 test_kpoints.py              3 passed
 test_libxc.py                2 passed
 test_native_eigh.py          3 passed
-test_native_pack.py          2 passed
+test_native_pack.py          3 passed
 test_native_xc.py            2 passed
 test_oracles.py              2 passed
+test_davidson.py             1 passed
 test_primitives.py           13 passed
 test_scf_driver.py           2 passed
 test_upf.py                  2 passed, 1 skipped
@@ -575,7 +596,7 @@ python -m pytest tests/test_forces.py -m slow
 
 ### 当前最大瓶颈
 
-- 100 Ry：dense eigh 2.36 s × 15 次，占 SCF 99%；
+- 100 Ry：Davidson 已替代 dense eigh，SCF 1.35 s；瓶颈变为 Davidson 内部 matvec/QR 数；
 - 20/40 Ry：dense eigh 仍是单步主成本；
 - native XC/pack/Hartree/density 已不是瓶颈。
 
@@ -595,7 +616,7 @@ python -m pytest tests/test_forces.py -m slow
 ### 当前不做
 
 - 不再微调 dense eigh；
-- 不把不稳定的 Davidson/LOBPCG 放进主路径；
+- 不把未过门禁的 LOBPCG/压缩基放进主路径；
 - 不在同 PP 对照中混入换基组/换赝势。
 
 ---
@@ -615,7 +636,7 @@ python -m pytest tests/test_forces.py -m slow
 | `src/addft/ops/hpsi.py` | matrix-free Hψ（实验） |
 | `native/` | CUDA kernels + build.sh |
 | `tests/` | 单元/回归/门禁 |
-| `bench/` | 性能基准 |
+| `bench/` | 性能基准；`bench/dashboard.py` 生成实时 HTML/JSON 看板 |
 | `docs/DEV_PLAN_10X.md` | 10× 路线与实验台账 |
 | `docs/experiments/` | 逐项实验记录 |
 | `docs/reports/ABACUS_COMPARISON.md` | 20/40/100 Ry 对照 |

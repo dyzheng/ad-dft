@@ -6,3 +6,6 @@ OUT.*/
 # native build artifacts
 native/*.so
 native/*.o
+
+# dashboard generated results
+bench/results/

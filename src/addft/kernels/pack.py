@@ -18,9 +18,12 @@ from jax import ShapeDtypeStruct
 
 _SCATTER = "addft_scatter_c128"
 _GATHER = "addft_gather_c128"
+_SCATTER64 = "addft_scatter_c64"
+_GATHER64 = "addft_gather_c64"
 _LOADED = False
 _CALLS: dict = {}
 _PACK = None
+_C64_READY = False
 _ENABLED = True
 
 
@@ -60,8 +63,8 @@ def _gpu_available() -> bool:
 
 
 def load_pack() -> Optional[tuple[Callable, Callable]]:
-    """Return ``(scatter, gather)`` for complex128 buffers, or ``None``."""
-    global _LOADED
+    """Return ``(scatter, gather)`` for complex128/complex64 buffers."""
+    global _LOADED, _C64_READY
     if os.environ.get("ADDFT_NATIVE_PACK", "1") == "0":
         return None
     if not _gpu_available():
@@ -75,9 +78,15 @@ def load_pack() -> Optional[tuple[Callable, Callable]]:
         g_handler = lib.GatherC128Handler
     except AttributeError:
         return None
+    s64_handler = getattr(lib, "ScatterC64Handler", None)
+    g64_handler = getattr(lib, "GatherC64Handler", None)
+    _C64_READY = s64_handler is not None and g64_handler is not None
 
     if not _LOADED:
-        for name, handler in ((_SCATTER, s_handler), (_GATHER, g_handler)):
+        targets = [(_SCATTER, s_handler), (_GATHER, g_handler)]
+        if _C64_READY:
+            targets += [(_SCATTER64, s64_handler), (_GATHER64, g64_handler)]
+        for name, handler in targets:
             try:
                 jax.ffi.register_ffi_target(
                     name, jax.ffi.pycapsule(handler), platform="CUDA")
@@ -90,12 +99,14 @@ def load_pack() -> Optional[tuple[Callable, Callable]]:
         idx = jnp.asarray(idx, dtype=jnp.int32)
         batch, nfft = grid.shape
         nG = int(nG)
-        key = ("g", int(batch), int(nfft), nG)
+        is64 = grid.dtype == jnp.complex64
+        target = _GATHER64 if is64 else _GATHER
+        out_dtype = jnp.complex64 if is64 else jnp.complex128
+        key = ("g", str(out_dtype), int(batch), int(nfft), nG)
         fn = _CALLS.get(key)
         if fn is None:
             fn = jax.ffi.ffi_call(
-                _GATHER,
-                [ShapeDtypeStruct((batch, nG), jnp.complex128)])
+                target, [ShapeDtypeStruct((batch, nG), out_dtype)])
             _CALLS[key] = fn
         return fn(grid, idx)[0]
 
@@ -104,12 +115,14 @@ def load_pack() -> Optional[tuple[Callable, Callable]]:
         idx = jnp.asarray(idx, dtype=jnp.int32)
         batch, nG = coeffs.shape
         nfft = int(nfft)
-        key = ("s", int(batch), int(nG), nfft)
+        is64 = coeffs.dtype == jnp.complex64
+        target = _SCATTER64 if is64 else _SCATTER
+        out_dtype = jnp.complex64 if is64 else jnp.complex128
+        key = ("s", str(out_dtype), int(batch), int(nG), nfft)
         fn = _CALLS.get(key)
         if fn is None:
             fn = jax.ffi.ffi_call(
-                _SCATTER,
-                [ShapeDtypeStruct((batch, nfft), jnp.complex128)])
+                target, [ShapeDtypeStruct((batch, nfft), out_dtype)])
             _CALLS[key] = fn
         return fn(coeffs, idx)[0]
 
@@ -138,7 +151,7 @@ def _get_pack():
 def native_scatter(c, idx, nfft):
     """Forward native scatter; JVP/VJP use the JAX scatter (so AD works)."""
     pack = _get_pack() if _ENABLED else None
-    if pack is None:
+    if pack is None or (c.dtype == jnp.complex64 and not _C64_READY):
         return _jax_scatter(c, idx, nfft)
     raw_s, _ = pack
     nfft = int(nfft)
@@ -160,7 +173,7 @@ def native_scatter(c, idx, nfft):
 def native_gather(g, idx, nG):
     """Forward native gather; JVP/VJP use the JAX gather (so AD works)."""
     pack = _get_pack() if _ENABLED else None
-    if pack is None:
+    if pack is None or (g.dtype == jnp.complex64 and not _C64_READY):
         return _jax_gather(g, idx, nG)
     _, raw_g = pack
     nG = int(nG)

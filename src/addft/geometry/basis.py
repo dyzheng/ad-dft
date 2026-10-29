@@ -206,7 +206,7 @@ def _coeffs_to_grid(basis: Basis, c: jnp.ndarray, miller) -> jnp.ndarray:
     """(..., nG) -> (..., n1, n2, n3) 的零填充谱数组。"""
     lead = c.shape[:-1]
     idx = _flat_index(basis.fft_shape, miller)
-    if _NATIVE_PACK is not None and c.dtype == jnp.complex128:
+    if _NATIVE_PACK is not None and c.dtype in (jnp.complex128, jnp.complex64):
         flat = native_scatter(c, idx, basis.nfft)
         return flat.reshape(lead + tuple(basis.fft_shape))
     flat = jnp.zeros(lead + (basis.nfft,), dtype=c.dtype)
@@ -224,10 +224,14 @@ def grid_to_coeffs(basis: Basis, arr: jnp.ndarray) -> jnp.ndarray:
     lead = arr.shape[:-3]
     flat = arr.reshape(lead + (basis.nfft,))
     idx = _flat_index(basis.fft_shape, basis.miller)
-    if _NATIVE_PACK is not None and flat.dtype == jnp.complex128:
+    if _NATIVE_PACK is not None and flat.dtype in (jnp.complex128, jnp.complex64):
         out = native_gather(flat, idx, basis.nG)
         return out.reshape(lead + (basis.nG,))
     return jnp.take(flat, idx, axis=-1)
+
+
+def _real_dtype(dtype):
+    return jnp.float32 if dtype in (jnp.complex64, jnp.float32) else jnp.float64
 
 
 def psi_to_real(basis: Basis, lattice, c: jnp.ndarray) -> jnp.ndarray:
@@ -235,7 +239,8 @@ def psi_to_real(basis: Basis, lattice, c: jnp.ndarray) -> jnp.ndarray:
     n = basis.nfft
     omega = volume(lattice)
     grid = coeffs_to_grid(basis, c)
-    out = jnp.fft.ifftn(grid, axes=(-3, -2, -1)) * (n / jnp.sqrt(omega))
+    scale = jnp.asarray(n / jnp.sqrt(omega), dtype=_real_dtype(c.dtype))
+    out = jnp.fft.ifftn(grid, axes=(-3, -2, -1)) * scale
     return out.reshape(c.shape[:-1] + (n,))
 
 
@@ -244,7 +249,8 @@ def real_to_psi(basis: Basis, lattice, psi_r: jnp.ndarray) -> jnp.ndarray:
     n = basis.nfft
     omega = volume(lattice)
     grid = psi_r.reshape(psi_r.shape[:-1] + tuple(basis.fft_shape))
-    spec = jnp.fft.fftn(grid, axes=(-3, -2, -1)) * (jnp.sqrt(omega) / n)
+    scale = jnp.asarray(jnp.sqrt(omega) / n, dtype=_real_dtype(psi_r.dtype))
+    spec = jnp.fft.fftn(grid, axes=(-3, -2, -1)) * scale
     return grid_to_coeffs(basis, spec)
 
 

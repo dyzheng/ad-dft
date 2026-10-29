@@ -98,3 +98,92 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(GatherC128Handler, GatherC128,
         .Arg<ffi::BufferR1<ffi::S32>>()
         .Ret<ffi::BufferR2<ffi::C128>>()
         .Ctx<ffi::PlatformStream<cudaStream_t>>());
+
+// --------------------------------------------------------------------------
+// complex64 variants (FP32/TF32 path)
+
+__global__ void scatter_kernel_c64(const cuComplex* __restrict__ coeffs,
+                                   const int* __restrict__ idx,
+                                   cuComplex* __restrict__ out,
+                                   int batch, int nG, int nfft) {
+  int t = blockIdx.x * blockDim.x + threadIdx.x;
+  int total = batch * nG;
+  if (t >= total) return;
+  int b = t / nG;
+  int i = t - b * nG;
+  out[b * nfft + idx[i]] = coeffs[t];
+}
+
+__global__ void gather_kernel_c64(const cuComplex* __restrict__ grid,
+                                  const int* __restrict__ idx,
+                                  cuComplex* __restrict__ out,
+                                  int batch, int nG, int nfft) {
+  int t = blockIdx.x * blockDim.x + threadIdx.x;
+  int total = batch * nG;
+  if (t >= total) return;
+  int b = t / nG;
+  int i = t - b * nG;
+  out[t] = grid[b * nfft + idx[i]];
+}
+
+static ffi::Error ScatterC64(
+    ffi::BufferR2<ffi::C64> coeffs,
+    ffi::BufferR1<ffi::S32> idx,
+    ffi::ResultBufferR2<ffi::C64> out,
+    cudaStream_t stream) {
+  auto cd = coeffs.dimensions();
+  auto od = out->dimensions();
+  const int batch = static_cast<int>(cd[0]);
+  const int nG = static_cast<int>(cd[1]);
+  const int nfft = static_cast<int>(od[1]);
+  if (static_cast<int>(idx.element_count()) != nG)
+    return ffi::Error::InvalidArgument("idx length != nG");
+  cudaMemsetAsync(out->typed_data(), 0,
+                  static_cast<size_t>(batch) * nfft * sizeof(cuComplex), stream);
+  const int threads = 256;
+  const int total = batch * nG;
+  const int blocks = (total + threads - 1) / threads;
+  scatter_kernel_c64<<<blocks, threads, 0, stream>>>(
+      reinterpret_cast<const cuComplex*>(coeffs.typed_data()),
+      idx.typed_data(),
+      reinterpret_cast<cuComplex*>(out->typed_data()),
+      batch, nG, nfft);
+  return ffi::Error::Success();
+}
+
+static ffi::Error GatherC64(
+    ffi::BufferR2<ffi::C64> grid,
+    ffi::BufferR1<ffi::S32> idx,
+    ffi::ResultBufferR2<ffi::C64> out,
+    cudaStream_t stream) {
+  auto gd = grid.dimensions();
+  auto od = out->dimensions();
+  const int batch = static_cast<int>(gd[0]);
+  const int nfft = static_cast<int>(gd[1]);
+  const int nG = static_cast<int>(od[1]);
+  if (static_cast<int>(idx.element_count()) != nG)
+    return ffi::Error::InvalidArgument("idx length != nG");
+  const int threads = 256;
+  const int total = batch * nG;
+  const int blocks = (total + threads - 1) / threads;
+  gather_kernel_c64<<<blocks, threads, 0, stream>>>(
+      reinterpret_cast<const cuComplex*>(grid.typed_data()),
+      idx.typed_data(),
+      reinterpret_cast<cuComplex*>(out->typed_data()),
+      batch, nG, nfft);
+  return ffi::Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(ScatterC64Handler, ScatterC64,
+    ffi::Ffi::Bind()
+        .Arg<ffi::BufferR2<ffi::C64>>()
+        .Arg<ffi::BufferR1<ffi::S32>>()
+        .Ret<ffi::BufferR2<ffi::C64>>()
+        .Ctx<ffi::PlatformStream<cudaStream_t>>());
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(GatherC64Handler, GatherC64,
+    ffi::Ffi::Bind()
+        .Arg<ffi::BufferR2<ffi::C64>>()
+        .Arg<ffi::BufferR1<ffi::S32>>()
+        .Ret<ffi::BufferR2<ffi::C64>>()
+        .Ctx<ffi::PlatformStream<cudaStream_t>>());

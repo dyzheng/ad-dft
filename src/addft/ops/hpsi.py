@@ -21,6 +21,7 @@ def kinetic_apply(basis: Basis, lattice, kpts, psi):
     for ik in range(int(kpts.shape[0])):
         kg = gvectors(basis, lattice, kpts[ik])
         t = 0.5 * jnp.sum(kg * kg, axis=-1)
+        t = t.astype(jnp.float32 if psi.dtype == jnp.complex64 else jnp.float64)
         out.append(psi[ik] * t)
     return jnp.stack(out, axis=0)
 

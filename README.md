@@ -88,6 +88,7 @@ kernel 均已接入；详见 `native/README.md` 与 `docs/reports/M1.md`。
 | `docs/DEV_PLAN_10X.md` | 10× 性能路线、方案优先级、实验台账、决策门禁 |
 | `docs/PHASE_SUMMARY.md` | 阶段总结：各模块设计考虑、尝试方案、实测效果、失败模式与下一步 |
 | `docs/experiments/` | E0–E6 逐项实验记录（基线、Hψ、eigensolver、direct min、FP32、DM 纯化） |
+| `bench/README.md` / `bench/dashboard.py` | 实时性能看板：对比 SCF/后端/驱动/原生开关 |
 | `docs/TASKS.md` | 22 个模块 + 5 个里程碑 + 任务卡模板 + 24 月节奏 |
 | `docs/VALIDATION.md` | 五级阶梯、五步协议、反作弊七条、封存集、CI 门禁 |
 | `docs/ABACUS_FACTS.md` | 从 ABACUS 源码逐条确认的事实（含文件行号） |

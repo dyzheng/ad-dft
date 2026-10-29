@@ -28,3 +28,12 @@
 
 **Yellow**。可作为早期 SCF 的近似本征求解，或作为 Davidson/LOBPCG 初值；
 不能作为最终精度路径。
+
+
+## 追加：FP32 matrix-free Hψ
+
+- native pack 增加 complex64。
+- 修复 `psi_to_real`/`real_to_psi`/`kinetic_apply` 的 float64 标量 upcast。
+- 100 Ry `Hψ`：FP64 约 3.7 ms，FP32 **约 1.5 ms**（~2.4×）。
+- 精度：wavefunction 最大差 ~1e-3（FP32 预期）。
+- 仍高于 <0.5 ms 目标；需要 fused FFT/Hψ kernel（cuFFTDx 或自定义 cuFFT）。
